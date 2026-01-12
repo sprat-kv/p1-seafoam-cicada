@@ -2,8 +2,24 @@
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 import json, os, re
+from uuid import uuid4
 
-app = FastAPI(title="Phase 1 Mock API")
+# Import graph tools to load orders data
+from app.graph import tools as graph_tools
+from app.graph.workflow import compile_graph
+from app.schema import TriageInput, TriageOutput, AdminReviewInput, ReviewAction, ReviewStatus
+from langgraph.checkpoint.memory import MemorySaver
+
+app = FastAPI(title="Ticket Triage API with LangGraph HITL")
+
+# Initialize checkpointer for HITL persistence
+checkpointer = MemorySaver()
+
+# Compile graph with checkpointer and interrupt before admin_review
+hitl_graph = compile_graph(
+    checkpointer=checkpointer,
+    interrupt_before=["admin_review"]
+)
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MOCK_DIR = os.path.join(ROOT, "mock_data")
 
@@ -14,6 +30,9 @@ def load(name):
 ORDERS = load("orders.json")
 ISSUES = load("issues.json")
 REPLIES = load("replies.json")
+
+# Load orders into the graph tools module
+graph_tools.load_orders(ORDERS)
 
 class TriageInput(BaseModel):
     ticket_text: str
@@ -55,8 +74,113 @@ def render_reply(issue_type: str, order):
 def reply_draft(payload: dict):
     return {"reply_text": render_reply(payload.get("issue_type"), payload.get("order", {}))}
 
-@app.post("/triage/invoke")
-def triage_invoke(body: TriageInput):
+@app.post("/triage/invoke", response_model=TriageOutput)
+def triage_invoke_langgraph(body: TriageInput):
+    """
+    Invoke the LangGraph ticket triage workflow with HITL support.
+    
+    This endpoint:
+    1. Starts a new triage workflow or continues an existing one
+    2. Processes until it hits the admin_review interrupt
+    3. Returns the current state for admin review
+    """
+    # Generate or use existing thread_id
+    thread_id = body.thread_id or str(uuid4())
+    
+    # Prepare graph config with thread_id for checkpointing
+    config = {"configurable": {"thread_id": thread_id}}
+    
+    # Prepare initial state
+    initial_state = {
+        "ticket_text": body.ticket_text,
+        "order_id": body.order_id,
+        "messages": [],
+        "issue_type": None,
+        "order_details": None,
+        "evidence": None,
+        "recommendation": None,
+        "draft_reply": None,
+        "review_status": ReviewStatus.PENDING,
+        "admin_feedback": None,
+        "sender": None,
+    }
+    
+    try:
+        # Invoke the graph - it will run until the interrupt
+        result = hitl_graph.invoke(initial_state, config)
+        
+        # Extract messages (convert to dict format for API response)
+        messages = []
+        for msg in result.get("messages", []):
+            messages.append({
+                "role": msg.type if hasattr(msg, "type") else "unknown",
+                "content": msg.content if hasattr(msg, "content") else str(msg)
+            })
+        
+        return TriageOutput(
+            thread_id=thread_id,
+            order_id=result.get("order_id"),
+            issue_type=result.get("issue_type"),
+            draft_reply=result.get("draft_reply"),
+            review_status=result.get("review_status", ReviewStatus.PENDING),
+            messages=messages
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing triage: {str(e)}")
+
+
+@app.post("/admin/review")
+def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
+    """
+    Resume the triage workflow after admin review.
+    
+    The admin provides a decision (approve/reject/request_changes) and optional feedback.
+    The graph resumes from the interrupt and continues based on the decision.
+    """
+    if not thread_id:
+        raise HTTPException(status_code=400, detail="thread_id is required")
+    
+    config = {"configurable": {"thread_id": thread_id}}
+    
+    try:
+        # Update state with admin decision before resuming
+        hitl_graph.update_state(
+            config,
+            {
+                "review_status": body.action.status,
+                "admin_feedback": body.action.feedback
+            }
+        )
+        
+        # Resume the graph with None input to continue from checkpoint
+        result = hitl_graph.invoke(None, config)
+        
+        # Extract messages
+        messages = []
+        for msg in result.get("messages", []):
+            messages.append({
+                "role": msg.type if hasattr(msg, "type") else "unknown",
+                "content": msg.content if hasattr(msg, "content") else str(msg)
+            })
+        
+        return TriageOutput(
+            thread_id=thread_id,
+            order_id=result.get("order_id"),
+            issue_type=result.get("issue_type"),
+            draft_reply=result.get("draft_reply"),
+            review_status=result.get("review_status", ReviewStatus.PENDING),
+            messages=messages
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing admin review: {str(e)}")
+
+
+# Legacy endpoints (keep for backward compatibility)
+@app.post("/triage/invoke_legacy")
+def triage_invoke_legacy(body: TriageInput):
+    """Legacy procedural implementation for backward compatibility."""
     text = body.ticket_text
     order_id = body.order_id
     if not order_id:
