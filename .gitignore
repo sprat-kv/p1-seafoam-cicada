@@ -1,0 +1,5 @@
+.cursor/*
+.venv/*
+.env
+.env*
+__pycache__/*
