@@ -13,3 +13,6 @@ langsmith>=0.1.0
 
 # Environment
 python-dotenv>=1.0.0
+
+# Testing
+requests>=2.31.0

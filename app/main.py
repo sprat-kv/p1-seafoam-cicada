@@ -3,11 +3,15 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 import json, os, re
 from uuid import uuid4
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Import graph tools to load orders data
 from app.graph import tools as graph_tools
 from app.graph.workflow import compile_graph
-from app.schema import TriageInput, TriageOutput, AdminReviewInput, ReviewAction, ReviewStatus
+from app.schema import TriageInput, TriageOutput, AdminReviewInput, ReviewAction, ReviewStatus, DraftScenario
 from langgraph.checkpoint.memory import MemorySaver
 
 app = FastAPI(title="Ticket Triage API with LangGraph HITL")
@@ -33,10 +37,6 @@ REPLIES = load("replies.json")
 
 # Load orders into the graph tools module
 graph_tools.load_orders(ORDERS)
-
-class TriageInput(BaseModel):
-    ticket_text: str
-    order_id: str | None = None
 
 @app.get("/health")
 def health(): return {"status": "ok"}
@@ -81,8 +81,15 @@ def triage_invoke_langgraph(body: TriageInput):
     
     This endpoint:
     1. Starts a new triage workflow or continues an existing one
-    2. Processes until it hits the admin_review interrupt
-    3. Returns the current state for admin review
+    2. Processes until it hits the admin_review interrupt (for REPLY scenarios)
+    3. Returns the current state for admin review or user response
+    
+    Scenarios:
+    - REPLY: Normal response, goes to admin review
+    - NEED_IDENTIFIER: Asks user for order_id or email
+    - ORDER_NOT_FOUND: Order ID not found, asks for correct info
+    - NO_ORDERS_FOUND: No orders for email, asks to verify
+    - CONFIRM_ORDER: Multiple orders found, asks user to pick
     """
     # Generate or use existing thread_id
     thread_id = body.thread_id or str(uuid4())
@@ -90,23 +97,26 @@ def triage_invoke_langgraph(body: TriageInput):
     # Prepare graph config with thread_id for checkpointing
     config = {"configurable": {"thread_id": thread_id}}
     
-    # Prepare initial state
+    # Prepare initial state with all fields
     initial_state = {
         "ticket_text": body.ticket_text,
         "order_id": body.order_id,
+        "email": None,
         "messages": [],
         "issue_type": None,
         "order_details": None,
+        "candidate_orders": None,
         "evidence": None,
         "recommendation": None,
         "draft_reply": None,
-        "review_status": ReviewStatus.PENDING,
+        "draft_scenario": None,
+        "review_status": None,
         "admin_feedback": None,
         "sender": None,
     }
     
     try:
-        # Invoke the graph - it will run until the interrupt
+        # Invoke the graph - it will run until interrupt or END
         result = hitl_graph.invoke(initial_state, config)
         
         # Extract messages (convert to dict format for API response)
@@ -117,12 +127,26 @@ def triage_invoke_langgraph(body: TriageInput):
                 "content": msg.content if hasattr(msg, "content") else str(msg)
             })
         
+        # Extract candidate orders summary if present
+        candidate_orders = None
+        if result.get("candidate_orders"):
+            candidate_orders = [
+                {"order_id": o.get("order_id"), "status": o.get("status"), 
+                 "first_item": o["items"][0]["name"] if o.get("items") else None}
+                for o in result.get("candidate_orders", [])
+            ]
+        
         return TriageOutput(
             thread_id=thread_id,
             order_id=result.get("order_id"),
+            email=result.get("email"),
             issue_type=result.get("issue_type"),
+            draft_scenario=result.get("draft_scenario"),
             draft_reply=result.get("draft_reply"),
-            review_status=result.get("review_status", ReviewStatus.PENDING),
+            review_status=result.get("review_status"),
+            evidence=result.get("evidence"),
+            recommendation=result.get("recommendation"),
+            candidate_orders=candidate_orders,
             messages=messages
         )
         
@@ -130,13 +154,18 @@ def triage_invoke_langgraph(body: TriageInput):
         raise HTTPException(status_code=500, detail=f"Error processing triage: {str(e)}")
 
 
-@app.post("/admin/review")
+@app.post("/admin/review", response_model=TriageOutput)
 def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
     """
     Resume the triage workflow after admin review.
     
     The admin provides a decision (approve/reject/request_changes) and optional feedback.
     The graph resumes from the interrupt and continues based on the decision.
+    
+    Actions:
+    - APPROVED: Finalizes the response
+    - REQUEST_CHANGES: Re-drafts with admin feedback
+    - REJECTED: Finalizes with rejection status
     """
     if not thread_id:
         raise HTTPException(status_code=400, detail="thread_id is required")
@@ -164,12 +193,26 @@ def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
                 "content": msg.content if hasattr(msg, "content") else str(msg)
             })
         
+        # Extract candidate orders summary if present
+        candidate_orders = None
+        if result.get("candidate_orders"):
+            candidate_orders = [
+                {"order_id": o.get("order_id"), "status": o.get("status"), 
+                 "first_item": o["items"][0]["name"] if o.get("items") else None}
+                for o in result.get("candidate_orders", [])
+            ]
+        
         return TriageOutput(
             thread_id=thread_id,
             order_id=result.get("order_id"),
+            email=result.get("email"),
             issue_type=result.get("issue_type"),
+            draft_scenario=result.get("draft_scenario"),
             draft_reply=result.get("draft_reply"),
-            review_status=result.get("review_status", ReviewStatus.PENDING),
+            review_status=result.get("review_status"),
+            evidence=result.get("evidence"),
+            recommendation=result.get("recommendation"),
+            candidate_orders=candidate_orders,
             messages=messages
         )
         

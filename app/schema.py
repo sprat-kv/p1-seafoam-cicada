@@ -15,6 +15,15 @@ class ReviewStatus(str, Enum):
     REQUEST_CHANGES = "request_changes"
 
 
+class DraftScenario(str, Enum):
+    """Scenario type for the unified draft node."""
+    REPLY = "reply"                      # Normal issue response using template
+    NEED_IDENTIFIER = "need_identifier"  # Ask for order_id or email
+    ORDER_NOT_FOUND = "order_not_found"  # Order ID invalid, ask for correct info
+    NO_ORDERS_FOUND = "no_orders_found"  # Email has no orders
+    CONFIRM_ORDER = "confirm_order"      # Multiple orders, list options for user to pick
+
+
 class ReviewAction(BaseModel):
     """Action taken by Admin during review."""
     status: ReviewStatus
@@ -52,9 +61,14 @@ class TriageOutput(BaseModel):
     """Output from the triage endpoint."""
     thread_id: str
     order_id: Optional[str] = None
+    email: Optional[str] = None
     issue_type: Optional[str] = None
+    draft_scenario: Optional[DraftScenario] = None
     draft_reply: Optional[str] = None
-    review_status: ReviewStatus = ReviewStatus.PENDING
+    review_status: Optional[ReviewStatus] = None
+    evidence: Optional[str] = None
+    recommendation: Optional[str] = None
+    candidate_orders: Optional[list[dict]] = None
     messages: list[dict] = Field(default_factory=list)
 
 

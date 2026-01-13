@@ -1,42 +1,52 @@
 [
   {
     "keyword": "refund",
-    "issue_type": "refund_request"
+    "issue_type": "refund_request",
+    "priority": 1
   },
   {
     "keyword": "broken",
-    "issue_type": "damaged_item"
+    "issue_type": "damaged_item",
+    "priority": 5
   },
   {
     "keyword": "damaged",
-    "issue_type": "damaged_item"
+    "issue_type": "damaged_item",
+    "priority": 5
   },
   {
     "keyword": "late",
-    "issue_type": "late_delivery"
+    "issue_type": "late_delivery",
+    "priority": 7
   },
   {
     "keyword": "not arrived",
-    "issue_type": "late_delivery"
+    "issue_type": "late_delivery",
+    "priority": 7
   },
   {
     "keyword": "missing",
-    "issue_type": "missing_item"
+    "issue_type": "missing_item",
+    "priority": 3
   },
   {
     "keyword": "double charge",
-    "issue_type": "duplicate_charge"
+    "issue_type": "duplicate_charge",
+    "priority": 2
   },
   {
     "keyword": "charged twice",
-    "issue_type": "duplicate_charge"
+    "issue_type": "duplicate_charge",
+    "priority": 2
   },
   {
     "keyword": "wrong item",
-    "issue_type": "wrong_item"
+    "issue_type": "wrong_item",
+    "priority": 4
   },
   {
     "keyword": "not working",
-    "issue_type": "defective_product"
+    "issue_type": "defective_product",
+    "priority": 6
   }
 ]

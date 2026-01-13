@@ -32,5 +32,19 @@ def fetch_order(order_id: str) -> Optional[dict]:
     return None
 
 
+@tool
+def search_orders(email: str) -> list[dict]:
+    """
+    Search orders by customer email.
+    
+    Args:
+        email: The customer email to search for.
+        
+    Returns:
+        List of orders matching the email (case-insensitive).
+    """
+    return [o for o in ORDERS if o["email"].lower() == email.lower()]
+
+
 # List of tools available for the agent
-tools = [fetch_order]
+tools = [fetch_order, search_orders]

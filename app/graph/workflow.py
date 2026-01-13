@@ -1,5 +1,11 @@
 """
 LangGraph workflow definition for the Ticket Triage orchestrator.
+
+This workflow implements a deterministic routing system with:
+- Python-driven routing for all control flow decisions
+- Single unified order resolution node
+- Single unified LLM-backed draft node for all response scenarios
+- HITL (Human-in-the-Loop) admin review for reply scenarios
 """
 
 from typing import Literal
@@ -7,19 +13,29 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.graph.state import GraphState
+from app.schema import ReviewStatus, DraftScenario
 from app.graph.nodes import (
     ingest,
     classify_issue,
-    fetch_order_node,
+    resolve_order,
     draft_reply,
     admin_review,
-    final_response,
+    finalize,
 )
 
 
-def route_after_ingest(state: GraphState) -> Literal["classify_issue", "__end__"]:
+# Type aliases for routing return types
+RouteAfterDraft = Literal["admin_review", "__end__"]
+RouteAfterAdminReview = Literal["finalize", "draft_reply"]
+
+
+def route_after_draft(state: GraphState) -> RouteAfterDraft:
     """
-    Route after ingestion based on whether order_id was extracted.
+    Route after draft based on the scenario.
+    
+    Only REPLY scenario goes to admin_review for HITL.
+    All other scenarios (need_identifier, order_not_found, etc.) 
+    end the run and await the next user message.
     
     Args:
         state: Current graph state.
@@ -27,104 +43,104 @@ def route_after_ingest(state: GraphState) -> Literal["classify_issue", "__end__"
     Returns:
         Next node name or END.
     """
-    order_id = state.get("order_id")
+    scenario = state.get("draft_scenario")
     
-    if order_id:
-        return "classify_issue"
+    if scenario == DraftScenario.REPLY:
+        return "admin_review"
     else:
-        # No order_id found - need user to provide it
+        # Other scenarios don't need admin approval - return to user
         return END
 
 
-def route_after_admin_review(state: GraphState) -> Literal["final_response", "classify_issue", "draft_reply"]:
+def route_after_admin_review(state: GraphState) -> RouteAfterAdminReview:
     """
     Route after admin review based on the review decision.
+    
+    - APPROVED -> finalize
+    - REQUEST_CHANGES -> draft_reply (re-draft with feedback)
+    - REJECTED -> finalize (with rejection status)
     
     Args:
         state: Current graph state.
         
     Returns:
-        Next node name based on review_status.
+        Next node name.
     """
-    from app.schema import ReviewStatus
-    
     review_status = state.get("review_status", ReviewStatus.PENDING)
     
     if review_status == ReviewStatus.APPROVED:
-        # Approved - send the response
-        return "final_response"
-    elif review_status == ReviewStatus.REJECTED:
-        # Rejected - restart from classification
-        return "classify_issue"
+        return "finalize"
     elif review_status == ReviewStatus.REQUEST_CHANGES:
-        # Request changes - redraft the reply
+        # Re-draft with admin feedback
         return "draft_reply"
     else:
-        # Default to final_response (shouldn't happen)
-        return "final_response"
+        # REJECTED or other - finalize anyway
+        return "finalize"
 
 
 def create_graph() -> StateGraph:
     """
     Create and return the Ticket Triage graph builder.
     
-    Graph Flow:
-    1. START -> ingest
-    2. ingest -> classify_issue (if order_id exists) or END (ask for ID)
-    3. classify_issue -> fetch_order (ToolNode)
-    4. fetch_order -> draft_reply
-    5. draft_reply -> admin_review (INTERRUPT HERE in Stage 3)
-    6. admin_review -> final_response (if APPROVED)
-                    -> classify_issue (if REJECTED - full retry)
-                    -> draft_reply (if REQUEST_CHANGES - redraft)
-    7. final_response -> END
+    Simplified Graph Flow:
+    ```
+    START -> ingest -> classify_issue -> resolve_order -> draft_reply
+    
+    resolve_order handles internally:
+      - Order ID present -> fetch -> found/not found
+      - Email present -> search -> 0/1/N results
+      - Neither -> need_identifier
+    
+    draft_reply -> route_after_draft
+      |-> admin_review (if scenario=REPLY) -> route_after_admin_review
+      |     |-> finalize -> END
+      |     |-> draft_reply (if REQUEST_CHANGES)
+      |-> END (if other scenarios - await user input)
+    ```
     
     Returns:
         StateGraph builder ready for compilation.
     """
-    # Initialize the graph builder
     builder = StateGraph(GraphState)
     
-    # Add nodes
+    # Add nodes (simplified - only 6 nodes now!)
     builder.add_node("ingest", ingest)
     builder.add_node("classify_issue", classify_issue)
-    builder.add_node("fetch_order", fetch_order_node)
+    builder.add_node("resolve_order", resolve_order)
     builder.add_node("draft_reply", draft_reply)
     builder.add_node("admin_review", admin_review)
-    builder.add_node("final_response", final_response)
+    builder.add_node("finalize", finalize)
     
-    # Define edges
+    # Entry point
     builder.add_edge(START, "ingest")
     
-    # Conditional routing after ingest
+    # Linear flow: ingest -> classify_issue -> resolve_order -> draft_reply
+    builder.add_edge("ingest", "classify_issue")
+    builder.add_edge("classify_issue", "resolve_order")
+    builder.add_edge("resolve_order", "draft_reply")
+    
+    # After draft -> route based on scenario
     builder.add_conditional_edges(
-        "ingest",
-        route_after_ingest,
+        "draft_reply",
+        route_after_draft,
         {
-            "classify_issue": "classify_issue",
-            "__end__": END
+            "admin_review": "admin_review",
+            "__end__": END,
         }
     )
     
-    # Linear flow through classification, tool calling, and drafting
-    builder.add_edge("classify_issue", "fetch_order")
-    builder.add_edge("fetch_order", "draft_reply")
-    
-    # Draft goes to admin_review (will interrupt before admin_review)
-    builder.add_edge("draft_reply", "admin_review")
-    
-    # Conditional routing after admin review based on decision
+    # After admin review -> route based on decision
     builder.add_conditional_edges(
         "admin_review",
         route_after_admin_review,
         {
-            "final_response": "final_response",
-            "classify_issue": "classify_issue",
-            "draft_reply": "draft_reply"
+            "finalize": "finalize",
+            "draft_reply": "draft_reply",
         }
     )
     
-    builder.add_edge("final_response", END)
+    # Final node leads to END
+    builder.add_edge("finalize", END)
     
     return builder
 
@@ -135,7 +151,8 @@ def compile_graph(checkpointer=None, interrupt_before=None):
     
     Args:
         checkpointer: Optional checkpointer for persistence (e.g., MemorySaver()).
-        interrupt_before: List of node names to interrupt before (default: ["admin_review"]).
+        interrupt_before: List of node names to interrupt before.
+                         Default: ["admin_review"] for HITL.
         
     Returns:
         Compiled graph.
