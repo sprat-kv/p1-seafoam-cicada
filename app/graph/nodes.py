@@ -10,7 +10,7 @@ import os
 import re
 from typing import Any
 
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from app.graph.state import GraphState
@@ -366,7 +366,8 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
     conversation_history = ""
     if len(messages) > 1:
         # Get last 5 messages before the current one
-        recent_messages = messages[-6:-1] if len(messages) > 6 else messages[:-1]
+        # Current message is the last one (just added), so we exclude it and take up to 5 before it
+        recent_messages = messages[-6:-1] if len(messages) > 5 else messages[:-1]
         history_parts = []
         for msg in recent_messages:
             if isinstance(msg, HumanMessage):
@@ -422,9 +423,10 @@ If this is a follow-up question, use the conversation history to provide a conte
     user_message = "\n".join(context_parts)
     
     # Invoke LLM (lazy initialization)
+    # Use proper LangChain message objects instead of plain dicts
     response = get_llm().invoke([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message}
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_message)
     ])
     
     draft = response.content

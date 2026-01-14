@@ -105,7 +105,8 @@ def triage_invoke_langgraph(body: TriageInput):
         # Check if thread has existing state (follow-up message)
         existing_state = hitl_graph.get_state(config)
         
-        if existing_state.values:
+        # Check if state dict has content (values dict is not empty means state exists)
+        if existing_state.values and existing_state.values.get("ticket_text"):
             # FOLLOW-UP: Only pass new ticket_text
             # The checkpointer restores existing context (order_id, order_details, etc.)
             # The ingest node will determine the routing path based on context
