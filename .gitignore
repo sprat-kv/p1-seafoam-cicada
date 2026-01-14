@@ -63,3 +63,4 @@ dmypy.json
 *.log
 temp/
 cache/
+test_outputs/

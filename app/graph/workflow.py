@@ -13,7 +13,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from app.graph.state import GraphState
-from app.schema import ReviewStatus, DraftScenario
+from app.schema import ReviewStatus, DraftScenario, RoutePath
 from app.graph.nodes import (
     ingest,
     classify_issue,
@@ -25,8 +25,34 @@ from app.graph.nodes import (
 
 
 # Type aliases for routing return types
+RouteAfterIngest = Literal["classify_issue", "resolve_order", "draft_reply"]
 RouteAfterDraft = Literal["admin_review", "__end__"]
 RouteAfterAdminReview = Literal["finalize", "draft_reply"]
+
+
+def route_after_ingest(state: GraphState) -> RouteAfterIngest:
+    """
+    Route based on ingest analysis for multi-turn conversation support.
+    
+    Routing logic:
+    - FULL / RECLASSIFY → classify_issue (continue normal classification flow)
+    - RESOLVE → resolve_order (skip classification, go to resolution)
+    - DRAFT → draft_reply (skip to draft, use existing context)
+    
+    Args:
+        state: Current graph state.
+        
+    Returns:
+        Next node name.
+    """
+    route_path = state.get("route_path", RoutePath.FULL)
+    
+    if route_path in (RoutePath.FULL, RoutePath.RECLASSIFY):
+        return "classify_issue"
+    elif route_path == RoutePath.RESOLVE:
+        return "resolve_order"
+    else:  # DRAFT
+        return "draft_reply"
 
 
 def route_after_draft(state: GraphState) -> RouteAfterDraft:
@@ -82,9 +108,12 @@ def create_graph() -> StateGraph:
     """
     Create and return the Ticket Triage graph builder.
     
-    Simplified Graph Flow:
+    Multi-turn Aware Graph Flow:
     ```
-    START -> ingest -> classify_issue -> resolve_order -> draft_reply
+    START -> ingest -> route_after_ingest
+      |-> classify_issue (FULL/RECLASSIFY) -> resolve_order -> draft_reply
+      |-> resolve_order (RESOLVE) -> draft_reply
+      |-> draft_reply (DRAFT - continuation)
     
     resolve_order handles internally:
       - Order ID present -> fetch -> found/not found
@@ -103,7 +132,7 @@ def create_graph() -> StateGraph:
     """
     builder = StateGraph(GraphState)
     
-    # Add nodes (simplified - only 6 nodes now!)
+    # Add nodes (6 nodes)
     builder.add_node("ingest", ingest)
     builder.add_node("classify_issue", classify_issue)
     builder.add_node("resolve_order", resolve_order)
@@ -114,8 +143,18 @@ def create_graph() -> StateGraph:
     # Entry point
     builder.add_edge(START, "ingest")
     
-    # Linear flow: ingest -> classify_issue -> resolve_order -> draft_reply
-    builder.add_edge("ingest", "classify_issue")
+    # After ingest -> route based on context (multi-turn support)
+    builder.add_conditional_edges(
+        "ingest",
+        route_after_ingest,
+        {
+            "classify_issue": "classify_issue",
+            "resolve_order": "resolve_order",
+            "draft_reply": "draft_reply",
+        }
+    )
+    
+    # Linear flow for nodes that always proceed to next
     builder.add_edge("classify_issue", "resolve_order")
     builder.add_edge("resolve_order", "draft_reply")
     

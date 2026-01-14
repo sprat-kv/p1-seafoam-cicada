@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 
 from app.graph.state import GraphState
-from app.schema import ReviewStatus, DraftScenario
+from app.schema import ReviewStatus, DraftScenario, RoutePath
 from app.graph.tools import fetch_order, search_orders
 
 # LLM instance - lazy initialized
@@ -46,46 +46,141 @@ def load_issues() -> list[dict]:
         return json.load(f)
 
 
+def check_issue_keywords(text: str) -> bool:
+    """
+    Check if text contains any issue keywords from issues.json.
+    
+    Args:
+        text: Text to check for issue keywords.
+        
+    Returns:
+        True if any issue keyword is found, False otherwise.
+    """
+    if not text:
+        return False
+    issues = load_issues()
+    text_lower = text.lower()
+    return any(rule["keyword"].lower() in text_lower for rule in issues)
+
+
+def extract_order_id(text: str) -> str | None:
+    """Extract order ID from text using regex."""
+    if not text:
+        return None
+    match = re.search(r'\b(ORD\d+)\b', text, re.IGNORECASE)
+    return match.group(1).upper() if match else None
+
+
+def extract_email(text: str) -> str | None:
+    """Extract email from text using regex."""
+    if not text:
+        return None
+    match = re.search(r'[\w.-]+@[\w.-]+\.\w+', text, re.IGNORECASE)
+    return match.group(0).lower() if match else None
+
+
 def ingest(state: GraphState) -> dict[str, Any]:
     """
-    Ingest node: Parse user input and extract identifiers.
+    Context-aware ingest node for multi-turn conversations.
     
-    Responsibilities:
-    - Extract order_id from ticket_text using regex (ORD\\d+)
-    - Extract email from ticket_text using regex
-    - Add user message to conversation history
+    Determines routing path based on:
+    1. Existing context (order_details present = follow-up)
+    2. New identifiers in message (order_id, email)
+    3. Issue keywords in message
+    
+    Routing logic:
+    - New conversation (no existing order_details) → FULL
+    - New/different order_id in message → FULL (fresh start, clear context)
+    - User provides missing identifier → RESOLVE
+    - New issue keywords detected → RECLASSIFY (keep order context)
+    - Simple continuation question → DRAFT
     
     Args:
         state: Current graph state.
         
     Returns:
-        Partial state update with extracted information.
+        Partial state update with extracted information and route_path.
     """
     ticket_text = state.get("ticket_text", "")
-    order_id = state.get("order_id")
-    email = state.get("email")
+    existing_order_id = state.get("order_id")
+    existing_order_details = state.get("order_details")
+    existing_email = state.get("email")
     
-    # Extract order_id if not provided
-    if not order_id and ticket_text:
-        match = re.search(r'\b(ORD\d+)\b', ticket_text, re.IGNORECASE)
-        if match:
-            order_id = match.group(1).upper()
+    # Extract identifiers from current message
+    new_order_id = extract_order_id(ticket_text)
+    new_email = extract_email(ticket_text)
     
-    # Extract email if not provided
-    if not email and ticket_text:
-        email_match = re.search(r'[\w.-]+@[\w.-]+\.\w+', ticket_text, re.IGNORECASE)
-        if email_match:
-            email = email_match.group(0).lower()
+    # Check for issue keywords in new message
+    has_new_issue = check_issue_keywords(ticket_text)
     
     # Add user message to conversation history
     messages = [HumanMessage(content=ticket_text)]
     
-    return {
-        "order_id": order_id,
-        "email": email,
-        "messages": messages,
-        "sender": "ingest"
-    }
+    # Routing decision
+    if not existing_order_details:
+        # No prior context - full pipeline
+        route_path = RoutePath.FULL
+        order_id = new_order_id or existing_order_id
+        email = new_email or existing_email
+        
+        return {
+            "order_id": order_id,
+            "email": email,
+            "route_path": route_path,
+            "messages": messages,
+            "sender": "ingest"
+        }
+    
+    elif new_order_id and new_order_id != existing_order_id:
+        # Different order - fresh start (clear all context)
+        route_path = RoutePath.FULL
+        
+        return {
+            "ticket_text": ticket_text,
+            "order_id": new_order_id,
+            "email": new_email,  # Reset email too
+            "order_details": None,      # Clear
+            "candidate_orders": None,   # Clear
+            "draft_scenario": None,     # Clear
+            "issue_type": None,         # Clear for fresh classification
+            "route_path": route_path,
+            "messages": messages,
+            "sender": "ingest"
+        }
+    
+    elif new_order_id or new_email:
+        # User provided missing/new identifier - resolve
+        route_path = RoutePath.RESOLVE
+        order_id = new_order_id or existing_order_id
+        email = new_email or existing_email
+        
+        return {
+            "order_id": order_id,
+            "email": email,
+            "route_path": route_path,
+            "messages": messages,
+            "sender": "ingest"
+        }
+    
+    elif has_new_issue:
+        # New issue keywords detected - reclassify but keep order context
+        route_path = RoutePath.RECLASSIFY
+        
+        return {
+            "route_path": route_path,
+            "messages": messages,
+            "sender": "ingest"
+        }
+    
+    else:
+        # Simple continuation - draft only (use all existing context)
+        route_path = RoutePath.DRAFT
+        
+        return {
+            "route_path": route_path,
+            "messages": messages,
+            "sender": "ingest"
+        }
 
 
 def classify_issue(state: GraphState) -> dict[str, Any]:
@@ -222,10 +317,11 @@ def resolve_order(state: GraphState) -> dict[str, Any]:
 
 def draft_reply(state: GraphState) -> dict[str, Any]:
     """
-    Unified LLM-backed draft node.
+    Unified LLM-backed draft node with conversation history support.
     
     Generates contextually appropriate responses based on the draft_scenario.
     Uses templates from replies.json as guidance for tone and structure.
+    Includes conversation history (last 5 messages) for multi-turn context.
     
     Scenarios handled:
     - REPLY: Normal issue response using template
@@ -248,6 +344,7 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
     order_id = state.get("order_id")
     email = state.get("email")
     admin_feedback = state.get("admin_feedback")
+    messages = state.get("messages", [])
     
     templates = load_templates()
     
@@ -264,22 +361,46 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
             for o in candidate_orders
         ])
     
+    # Build conversation history from last 5 messages (excluding current)
+    # This provides context for follow-up questions
+    conversation_history = ""
+    if len(messages) > 1:
+        # Get last 5 messages before the current one
+        recent_messages = messages[-6:-1] if len(messages) > 6 else messages[:-1]
+        history_parts = []
+        for msg in recent_messages:
+            if isinstance(msg, HumanMessage):
+                role = "Customer"
+            elif isinstance(msg, AIMessage):
+                role = "Agent"
+            else:
+                role = "System"
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            # Skip [FINAL] prefixed messages (internal markers)
+            if not content.startswith("[FINAL]"):
+                history_parts.append(f"{role}: {content}")
+        if history_parts:
+            conversation_history = "\n".join(history_parts)
+    
     # Build context for LLM
-    system_prompt = f"""You are a customer support assistant for an e-commerce company. Generate a helpful, professional response based on the scenario.
+    history_section = f"\nCONVERSATION HISTORY (for context):\n{conversation_history}\n" if conversation_history else ""
+    
+    system_prompt = f"""You are a customer support assistant for an e-commerce company. Generate a helpful, professional response based on the scenario and conversation context.
 
 SCENARIO: {scenario.value if scenario else 'reply'}
-
+{history_section}
 Available templates (use as structure/tone guidance):
 {templates_str}
 
 Respond appropriately based on scenario:
-- reply: Use the template for the issue_type, fill in customer_name and order_id placeholders
+- reply: Use the template for the issue_type, fill in customer_name and order_id placeholders. For follow-up questions, provide relevant information based on the conversation history.
 - need_identifier: Politely ask the customer to provide their order ID (format: ORD followed by numbers) or the email address associated with their order
 - order_not_found: Explain that we couldn't find an order with that ID, ask them to verify and provide the correct order ID or email
 - no_orders_found: Explain that we couldn't find any orders for that email address, ask them to verify and provide a different email or order ID
 - confirm_order: List the candidate orders and ask the customer to specify which order they're inquiring about
 
-Keep responses concise, friendly, and professional. Do not include internal notes or scenario labels in the response."""
+Keep responses concise, friendly, and professional. Do not include internal notes or scenario labels in the response.
+If this is a follow-up question, use the conversation history to provide a contextual response."""
 
     # Build user message with context
     context_parts = [f"Customer message: {ticket_text}"]

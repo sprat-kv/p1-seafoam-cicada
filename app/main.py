@@ -84,6 +84,10 @@ def triage_invoke_langgraph(body: TriageInput):
     2. Processes until it hits the admin_review interrupt (for REPLY scenarios)
     3. Returns the current state for admin review or user response
     
+    Multi-turn support:
+    - For new conversations: creates full initial state
+    - For follow-ups: only passes new ticket_text, checkpointer restores context
+    
     Scenarios:
     - REPLY: Normal response, goes to admin review
     - NEED_IDENTIFIER: Asks user for order_id or email
@@ -97,27 +101,37 @@ def triage_invoke_langgraph(body: TriageInput):
     # Prepare graph config with thread_id for checkpointing
     config = {"configurable": {"thread_id": thread_id}}
     
-    # Prepare initial state with all fields
-    initial_state = {
-        "ticket_text": body.ticket_text,
-        "order_id": body.order_id,
-        "email": None,
-        "messages": [],
-        "issue_type": None,
-        "order_details": None,
-        "candidate_orders": None,
-        "evidence": None,
-        "recommendation": None,
-        "draft_reply": None,
-        "draft_scenario": None,
-        "review_status": None,
-        "admin_feedback": None,
-        "sender": None,
-    }
-    
     try:
+        # Check if thread has existing state (follow-up message)
+        existing_state = hitl_graph.get_state(config)
+        
+        if existing_state.values:
+            # FOLLOW-UP: Only pass new ticket_text
+            # The checkpointer restores existing context (order_id, order_details, etc.)
+            # The ingest node will determine the routing path based on context
+            input_state = {"ticket_text": body.ticket_text}
+        else:
+            # NEW CONVERSATION: Full initial state
+            input_state = {
+                "ticket_text": body.ticket_text,
+                "order_id": body.order_id,
+                "email": None,
+                "messages": [],
+                "issue_type": None,
+                "order_details": None,
+                "candidate_orders": None,
+                "evidence": None,
+                "recommendation": None,
+                "draft_reply": None,
+                "draft_scenario": None,
+                "route_path": None,
+                "review_status": None,
+                "admin_feedback": None,
+                "sender": None,
+            }
+        
         # Invoke the graph - it will run until interrupt or END
-        result = hitl_graph.invoke(initial_state, config)
+        result = hitl_graph.invoke(input_state, config)
         
         # Extract messages (convert to dict format for API response)
         messages = []

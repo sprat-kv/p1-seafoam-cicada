@@ -7,7 +7,7 @@ from typing_extensions import TypedDict
 
 from langgraph.graph.message import add_messages
 
-from app.schema import ReviewStatus, DraftScenario
+from app.schema import ReviewStatus, DraftScenario, RoutePath
 
 
 class GraphState(TypedDict):
@@ -26,6 +26,7 @@ class GraphState(TypedDict):
         recommendation: The action recommendation for the ticket.
         draft_reply: The Assistant's proposed response text.
         draft_scenario: The scenario type for the unified draft node.
+        route_path: Routing decision from ingest for multi-turn support.
         review_status: Current status of Admin review.
         admin_feedback: Feedback from Admin (for edits/rejections).
         sender: The last node that modified the state.
@@ -41,6 +42,7 @@ class GraphState(TypedDict):
     recommendation: Optional[str]
     draft_reply: Optional[str]
     draft_scenario: Optional[DraftScenario]
+    route_path: Optional[RoutePath]
     review_status: ReviewStatus
     admin_feedback: Optional[str]
     sender: Optional[str]

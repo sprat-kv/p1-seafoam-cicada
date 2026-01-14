@@ -68,6 +68,27 @@ The script provides:
 - ℹ️ Blue info messages for status updates
 - ⚠️ Yellow warnings for issues
 
+### Output Files
+
+All conversation outputs are automatically saved to the `test_outputs/` directory:
+
+**Per Conversation Files:**
+- `{conversation_id}_{timestamp}.json` - Complete structured data (JSON)
+- `{conversation_id}_{timestamp}.txt` - Human-readable format (text)
+
+**Summary Files:**
+- `test_summary_{timestamp}.json` - Overall test results (JSON)
+- `test_summary_{timestamp}.txt` - Overall test results (text)
+
+**Output includes:**
+- All user messages
+- All API responses (triage and admin review)
+- Validation results for each check
+- Expected vs actual responses
+- Timestamps
+- Thread IDs
+- Complete conversation flow
+
 ## Example Output
 
 ```
