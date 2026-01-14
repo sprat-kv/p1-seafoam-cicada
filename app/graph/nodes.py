@@ -84,11 +84,13 @@ def ingest(state: GraphState) -> dict[str, Any]:
     Context-aware ingest node for multi-turn conversations.
     
     Determines routing path based on:
-    1. Existing context (order_details present = follow-up)
-    2. New identifiers in message (order_id, email)
-    3. Issue keywords in message
+    1. Admin resume scenario (review_status changed from PENDING)
+    2. Existing context (order_details present = follow-up)
+    3. New identifiers in message (order_id, email)
+    4. Issue keywords in message
     
     Routing logic:
+    - Admin has made decision (APPROVED/REJECTED/REQUEST_CHANGES) → ADMIN_RESUME
     - New conversation (no existing order_details) → FULL
     - New/different order_id in message → FULL (fresh start, clear context)
     - User provides missing identifier → RESOLVE
@@ -105,6 +107,21 @@ def ingest(state: GraphState) -> dict[str, Any]:
     existing_order_id = state.get("order_id")
     existing_order_details = state.get("order_details")
     existing_email = state.get("email")
+    existing_scenario = state.get("draft_scenario")
+    review_status = state.get("review_status")
+    
+    # Add user message to conversation history (only if there's text)
+    messages = [HumanMessage(content=ticket_text)] if ticket_text else []
+    
+    # Check for admin resume scenario FIRST
+    # If this is a REPLY scenario and admin has made a decision, route to admin_review
+    if (existing_scenario == DraftScenario.REPLY and 
+        review_status in (ReviewStatus.APPROVED, ReviewStatus.REJECTED, ReviewStatus.REQUEST_CHANGES)):
+        return {
+            "route_path": RoutePath.ADMIN_RESUME,
+            "messages": messages,
+            "sender": "ingest"
+        }
     
     # Extract identifiers from current message
     new_order_id = extract_order_id(ticket_text)
@@ -112,9 +129,6 @@ def ingest(state: GraphState) -> dict[str, Any]:
     
     # Check for issue keywords in new message
     has_new_issue = check_issue_keywords(ticket_text)
-    
-    # Add user message to conversation history
-    messages = [HumanMessage(content=ticket_text)]
     
     # Routing decision
     if not existing_order_details:
@@ -233,6 +247,18 @@ def classify_issue(state: GraphState) -> dict[str, Any]:
     }
 
 
+def _get_suggested_action(issue_type: str, order_id: str | None, order_details: dict | None) -> str:
+    """Helper to generate suggested_action from template."""
+    customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+    templates = load_templates()
+    template = next((t["template"] for t in templates if t["issue_type"] == issue_type), None)
+    
+    if template:
+        return template.replace("{{customer_name}}", customer_name).replace("{{order_id}}", order_id or "N/A")
+    else:
+        return f"Process {issue_type} request for order {order_id or 'N/A'}"
+
+
 def resolve_order(state: GraphState) -> dict[str, Any]:
     """
     Unified order resolution node.
@@ -241,17 +267,21 @@ def resolve_order(state: GraphState) -> dict[str, Any]:
     
     1. If order_id is present:
        - Fetch order by ID
-       - If found: scenario=REPLY
+       - If found: scenario=REPLY, set suggested_action, admin_approved=None
        - If not found: scenario=ORDER_NOT_FOUND
     
     2. Else if email is present:
        - Search orders by email
        - 0 results: scenario=NO_ORDERS_FOUND
-       - 1 result: auto-select, scenario=REPLY
+       - 1 result: auto-select, scenario=REPLY, set suggested_action, admin_approved=None
        - N results: scenario=CONFIRM_ORDER
     
     3. Else (no identifier):
        - scenario=NEED_IDENTIFIER
+    
+    For REPLY scenarios, this node also sets:
+    - suggested_action: Template-based action for admin review
+    - admin_approved: None (pending)
     
     Args:
         state: Current graph state.
@@ -261,15 +291,21 @@ def resolve_order(state: GraphState) -> dict[str, Any]:
     """
     order_id = state.get("order_id")
     email = state.get("email")
+    issue_type = state.get("issue_type", "unknown")
     
     # Path 1: Order ID is present - fetch by ID
     if order_id:
         order_details = fetch_order.invoke({"order_id": order_id})
         
         if order_details:
+            # Generate suggested_action for admin review (merged from prepare_action)
+            suggested_action = _get_suggested_action(issue_type, order_id, order_details)
+            
             return {
                 "order_details": order_details,
                 "draft_scenario": DraftScenario.REPLY,
+                "suggested_action": suggested_action,
+                "admin_approved": None,  # Pending admin review
                 "sender": "resolve_order"
             }
         else:
@@ -293,11 +329,18 @@ def resolve_order(state: GraphState) -> dict[str, Any]:
         elif len(candidates) == 1:
             # Exactly one order - auto-select
             order = candidates[0]
+            resolved_order_id = order["order_id"]
+            
+            # Generate suggested_action for admin review (merged from prepare_action)
+            suggested_action = _get_suggested_action(issue_type, resolved_order_id, order)
+            
             return {
-                "order_id": order["order_id"],
+                "order_id": resolved_order_id,
                 "order_details": order,
                 "candidate_orders": candidates,
                 "draft_scenario": DraftScenario.REPLY,
+                "suggested_action": suggested_action,
+                "admin_approved": None,  # Pending admin review
                 "sender": "resolve_order"
             }
         else:
@@ -315,20 +358,54 @@ def resolve_order(state: GraphState) -> dict[str, Any]:
     }
 
 
+def prepare_action(state: GraphState) -> dict[str, Any]:
+    """
+    Prepare action for admin review.
+    
+    Collects information for admin to review:
+    - Looks up suggested action from template based on issue_type
+    - Sets admin_approved to None (pending)
+    
+    Only runs for REPLY scenario (issue identified + order found).
+    Does NOT generate user message - that's draft_reply's job.
+    
+    Args:
+        state: Current graph state.
+        
+    Returns:
+        Partial state update with suggested_action and admin_approved.
+    """
+    issue_type = state.get("issue_type", "unknown")
+    order_id = state.get("order_id")
+    order_details = state.get("order_details", {})
+    customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+    
+    # Get suggested action from template
+    templates = load_templates()
+    template = next((t["template"] for t in templates if t["issue_type"] == issue_type), None)
+    
+    if template:
+        suggested_action = template.replace("{{customer_name}}", customer_name).replace("{{order_id}}", order_id or "N/A")
+    else:
+        suggested_action = f"Process {issue_type} request for order {order_id or 'N/A'}"
+    
+    return {
+        "suggested_action": suggested_action,
+        "admin_approved": None,  # Pending - triggers "ticket raised" in draft_reply
+        "sender": "prepare_action"
+    }
+
+
 def draft_reply(state: GraphState) -> dict[str, Any]:
     """
-    Unified LLM-backed draft node with conversation history support.
+    Unified draft node that generates responses based on admin approval state.
     
-    Generates contextually appropriate responses based on the draft_scenario.
-    Uses templates from replies.json as guidance for tone and structure.
-    Includes conversation history (last 5 messages) for multi-turn context.
+    For REPLY scenario, response depends on admin_approved:
+    - None (pending): Generate "ticket raised" acknowledgment (no LLM)
+    - True (approved): Generate full action message using LLM
+    - False (rejected): Generate rejection message (no LLM)
     
-    Scenarios handled:
-    - REPLY: Normal issue response using template
-    - NEED_IDENTIFIER: Ask for order_id or email
-    - ORDER_NOT_FOUND: Order ID invalid, ask for correct info
-    - NO_ORDERS_FOUND: Email has no orders
-    - CONFIRM_ORDER: Multiple orders, list options for user to pick
+    For non-REPLY scenarios (need_identifier, etc.): Use LLM as before.
     
     Args:
         state: Current graph state.
@@ -344,8 +421,99 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
     order_id = state.get("order_id")
     email = state.get("email")
     admin_feedback = state.get("admin_feedback")
+    admin_approved = state.get("admin_approved")
+    suggested_action = state.get("suggested_action")
     messages = state.get("messages", [])
     
+    # For REPLY scenario, handle based on admin_approved state
+    if scenario == DraftScenario.REPLY:
+        if admin_approved is None:
+            # PENDING: Generate acknowledgment message (no LLM needed)
+            issue_labels = {
+                "refund_request": "refund request",
+                "wrong_item": "wrong item issue",
+                "missing_item": "missing item",
+                "late_delivery": "delivery delay",
+                "damaged_item": "damaged item report",
+                "duplicate_charge": "duplicate charge",
+                "defective_product": "defective product report",
+            }
+            issue_label = issue_labels.get(issue_type, "issue")
+            customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+            
+            draft = f"Hi {customer_name}, we identified a {issue_label} for order {order_id}. Your ticket has been raised and is under review. We will update you shortly."
+            
+            # Create evidence and recommendation
+            evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}"
+            if order_details:
+                evidence += f", Status: {order_details.get('status', 'N/A')}"
+            recommendation = f"Awaiting admin approval for {issue_type} resolution"
+            
+            return {
+                "draft_reply": draft,
+                "evidence": evidence,
+                "recommendation": recommendation,
+                "messages": [AIMessage(content=draft)],
+                "review_status": ReviewStatus.PENDING,
+                "sender": "draft_reply"
+            }
+        
+        elif admin_approved is True:
+            # APPROVED: Generate full action message using LLM
+            # Use suggested_action as base and personalize with LLM
+            customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+            
+            system_prompt = f"""You are a customer support assistant. Generate a professional response confirming the approved action for the customer.
+
+The admin has APPROVED the following action:
+{suggested_action}
+
+Personalize and enhance this message while keeping the same intent. Be warm, professional, and reassuring.
+Include any relevant details about next steps or timeline if appropriate."""
+
+            user_message = f"""Customer: {customer_name}
+Order ID: {order_id}
+Issue Type: {issue_type}
+Order Status: {order_details.get('status', 'N/A') if order_details else 'N/A'}
+Admin feedback: {admin_feedback or 'None'}"""
+
+            response = get_llm().invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_message)
+            ])
+            
+            draft = response.content
+            evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: APPROVED"
+            recommendation = f"Approved {issue_type} resolution for order {order_id}"
+            
+            return {
+                "draft_reply": draft,
+                "evidence": evidence,
+                "recommendation": recommendation,
+                "messages": [AIMessage(content=draft)],
+                "review_status": ReviewStatus.APPROVED,
+                "sender": "draft_reply"
+            }
+        
+        else:  # admin_approved is False
+            # REJECTED: Generate rejection message (no LLM needed)
+            customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+            
+            draft = f"Hi {customer_name}, we reviewed your request regarding order {order_id} and found no issues with the order at this time. We cannot proceed with the requested action. If you believe this is an error, please provide additional details or contact us with more information."
+            
+            evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: REJECTED"
+            recommendation = f"Rejected {issue_type} request for order {order_id}"
+            
+            return {
+                "draft_reply": draft,
+                "evidence": evidence,
+                "recommendation": recommendation,
+                "messages": [AIMessage(content=draft)],
+                "review_status": ReviewStatus.REJECTED,
+                "sender": "draft_reply"
+            }
+    
+    # For non-REPLY scenarios, use LLM as before
     templates = load_templates()
     
     # Build templates string for context
@@ -362,11 +530,8 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
         ])
     
     # Build conversation history from last 5 messages (excluding current)
-    # This provides context for follow-up questions
     conversation_history = ""
     if len(messages) > 1:
-        # Get last 5 messages before the current one
-        # Current message is the last one (just added), so we exclude it and take up to 5 before it
         recent_messages = messages[-6:-1] if len(messages) > 5 else messages[:-1]
         history_parts = []
         for msg in recent_messages:
@@ -377,13 +542,11 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
             else:
                 role = "System"
             content = msg.content if hasattr(msg, "content") else str(msg)
-            # Skip [FINAL] prefixed messages (internal markers)
             if not content.startswith("[FINAL]"):
                 history_parts.append(f"{role}: {content}")
         if history_parts:
             conversation_history = "\n".join(history_parts)
     
-    # Build context for LLM
     history_section = f"\nCONVERSATION HISTORY (for context):\n{conversation_history}\n" if conversation_history else ""
     
     system_prompt = f"""You are a customer support assistant for an e-commerce company. Generate a helpful, professional response based on the scenario and conversation context.
@@ -394,14 +557,12 @@ Available templates (use as structure/tone guidance):
 {templates_str}
 
 Respond appropriately based on scenario:
-- reply: Use the template for the issue_type, fill in customer_name and order_id placeholders. For follow-up questions, provide relevant information based on the conversation history.
 - need_identifier: Politely ask the customer to provide their order ID (format: ORD followed by numbers) or the email address associated with their order
 - order_not_found: Explain that we couldn't find an order with that ID, ask them to verify and provide the correct order ID or email
 - no_orders_found: Explain that we couldn't find any orders for that email address, ask them to verify and provide a different email or order ID
 - confirm_order: List the candidate orders and ask the customer to specify which order they're inquiring about
 
-Keep responses concise, friendly, and professional. Do not include internal notes or scenario labels in the response.
-If this is a follow-up question, use the conversation history to provide a contextual response."""
+Keep responses concise, friendly, and professional. Do not include internal notes or scenario labels in the response."""
 
     # Build user message with context
     context_parts = [f"Customer message: {ticket_text}"]
@@ -417,13 +578,9 @@ If this is a follow-up question, use the conversation history to provide a conte
         context_parts.append(f"Order status: {order_details.get('status', 'N/A')}")
     if candidates_str:
         context_parts.append(f"Candidate orders:\n{candidates_str}")
-    if admin_feedback:
-        context_parts.append(f"Admin feedback for revision: {admin_feedback}")
     
     user_message = "\n".join(context_parts)
     
-    # Invoke LLM (lazy initialization)
-    # Use proper LangChain message objects instead of plain dicts
     response = get_llm().invoke([
         SystemMessage(content=system_prompt),
         HumanMessage(content=user_message)
@@ -432,30 +589,18 @@ If this is a follow-up question, use the conversation history to provide a conte
     draft = response.content
     
     # Create evidence summary
-    evidence = f"Scenario: {scenario.value if scenario else 'reply'}, Issue Type: {issue_type}"
+    evidence = f"Scenario: {scenario.value if scenario else 'unknown'}, Issue Type: {issue_type}"
     if order_id:
         evidence += f", Order ID: {order_id}"
-    if order_details:
-        evidence += f", Status: {order_details.get('status', 'N/A')}"
     
-    # Create recommendation
-    if scenario == DraftScenario.REPLY:
-        recommendation = f"Recommend {issue_type} resolution for order {order_id or 'N/A'}"
-    else:
-        recommendation = f"Awaiting additional information ({scenario.value if scenario else 'unknown'})"
-    
-    # Add draft as assistant message
-    draft_message = AIMessage(content=draft)
-    
-    # Only set review_status to PENDING for REPLY scenario
-    review_status = ReviewStatus.PENDING if scenario == DraftScenario.REPLY else None
+    recommendation = f"Awaiting additional information ({scenario.value if scenario else 'unknown'})"
     
     return {
         "draft_reply": draft,
         "evidence": evidence,
         "recommendation": recommendation,
-        "messages": [draft_message],
-        "review_status": review_status,
+        "messages": [AIMessage(content=draft)],
+        "review_status": None,
         "sender": "draft_reply"
     }
 
@@ -467,25 +612,40 @@ def admin_review(state: GraphState) -> dict[str, Any]:
     This node is reached after the graph resumes from interrupt.
     The review_status and admin_feedback are set externally before resuming.
     
+    Sets admin_approved based on review_status:
+    - APPROVED → True
+    - REJECTED → False
+    - REQUEST_CHANGES → None (triggers re-draft)
+    - PENDING → None
+    
     Args:
         state: Current graph state.
         
     Returns:
-        Partial state update based on admin decision.
+        Partial state update with admin_approved flag.
     """
     review_status = state.get("review_status", ReviewStatus.PENDING)
     
-    # Log the review decision
-    print(f"[Admin Review] Status: {review_status}")
-    if state.get("admin_feedback"):
-        print(f"[Admin Review] Feedback: {state.get('admin_feedback')}")
+    # Set admin_approved based on review_status
+    if review_status == ReviewStatus.APPROVED:
+        admin_approved = True
+    elif review_status == ReviewStatus.REJECTED:
+        admin_approved = False
+    else:
+        # REQUEST_CHANGES or PENDING - keep None to trigger re-draft with feedback
+        admin_approved = None
     
-    return {"sender": "admin_review"}
+    return {
+        "admin_approved": admin_approved,
+        "sender": "admin_review"
+    }
 
 
 def finalize(state: GraphState) -> dict[str, Any]:
     """
-    Finalize node: Record the approved response and mark as complete.
+    Finalize node: Record the response and mark as complete.
+    
+    Preserves the existing review_status (APPROVED or REJECTED) set by draft_reply.
     
     Args:
         state: Current graph state.
@@ -494,7 +654,6 @@ def finalize(state: GraphState) -> dict[str, Any]:
         Partial state update with final message added.
     """
     draft_reply = state.get("draft_reply", "")
-    review_status = state.get("review_status", ReviewStatus.APPROVED)
     
     # Create final message
     final_message = AIMessage(
@@ -502,8 +661,8 @@ def finalize(state: GraphState) -> dict[str, Any]:
         name="assistant"
     )
     
+    # Preserve existing review_status (don't overwrite)
     return {
         "messages": [final_message],
-        "review_status": ReviewStatus.APPROVED,
         "sender": "finalize"
     }

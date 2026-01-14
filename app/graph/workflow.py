@@ -25,9 +25,8 @@ from app.graph.nodes import (
 
 
 # Type aliases for routing return types
-RouteAfterIngest = Literal["classify_issue", "resolve_order", "draft_reply"]
-RouteAfterDraft = Literal["admin_review", "__end__"]
-RouteAfterAdminReview = Literal["finalize", "draft_reply"]
+RouteAfterIngest = Literal["classify_issue", "resolve_order", "draft_reply", "admin_review"]
+RouteAfterDraft = Literal["finalize", "__end__"]
 
 
 def route_after_ingest(state: GraphState) -> RouteAfterIngest:
@@ -35,6 +34,7 @@ def route_after_ingest(state: GraphState) -> RouteAfterIngest:
     Route based on ingest analysis for multi-turn conversation support.
     
     Routing logic:
+    - ADMIN_RESUME → admin_review (admin has made decision, process it)
     - FULL / RECLASSIFY → classify_issue (continue normal classification flow)
     - RESOLVE → resolve_order (skip classification, go to resolution)
     - DRAFT → draft_reply (skip to draft, use existing context)
@@ -47,7 +47,9 @@ def route_after_ingest(state: GraphState) -> RouteAfterIngest:
     """
     route_path = state.get("route_path", RoutePath.FULL)
     
-    if route_path in (RoutePath.FULL, RoutePath.RECLASSIFY):
+    if route_path == RoutePath.ADMIN_RESUME:
+        return "admin_review"
+    elif route_path in (RoutePath.FULL, RoutePath.RECLASSIFY):
         return "classify_issue"
     elif route_path == RoutePath.RESOLVE:
         return "resolve_order"
@@ -57,11 +59,13 @@ def route_after_ingest(state: GraphState) -> RouteAfterIngest:
 
 def route_after_draft(state: GraphState) -> RouteAfterDraft:
     """
-    Route after draft based on the scenario.
+    Route after draft based on the scenario and admin_approved state.
     
-    Only REPLY scenario goes to admin_review for HITL.
-    All other scenarios (need_identifier, order_not_found, etc.) 
-    end the run and await the next user message.
+    For REPLY scenario:
+    - admin_approved is None -> END (pending, wait for admin)
+    - admin_approved is not None -> finalize (after admin_review)
+    
+    All other scenarios end the run and await the next user message.
     
     Args:
         state: Current graph state.
@@ -70,61 +74,49 @@ def route_after_draft(state: GraphState) -> RouteAfterDraft:
         Next node name or END.
     """
     scenario = state.get("draft_scenario")
+    admin_approved = state.get("admin_approved")
     
     if scenario == DraftScenario.REPLY:
-        return "admin_review"
+        # Check if admin has made a decision
+        if admin_approved is not None:
+            return "finalize"
+        else:
+            # First run - end and wait for admin decision
+            return END
     else:
         # Other scenarios don't need admin approval - return to user
         return END
-
-
-def route_after_admin_review(state: GraphState) -> RouteAfterAdminReview:
-    """
-    Route after admin review based on the review decision.
-    
-    - APPROVED -> finalize
-    - REQUEST_CHANGES -> draft_reply (re-draft with feedback)
-    - REJECTED -> finalize (with rejection status)
-    
-    Args:
-        state: Current graph state.
-        
-    Returns:
-        Next node name.
-    """
-    review_status = state.get("review_status", ReviewStatus.PENDING)
-    
-    if review_status == ReviewStatus.APPROVED:
-        return "finalize"
-    elif review_status == ReviewStatus.REQUEST_CHANGES:
-        # Re-draft with admin feedback
-        return "draft_reply"
-    else:
-        # REJECTED or other - finalize anyway
-        return "finalize"
 
 
 def create_graph() -> StateGraph:
     """
     Create and return the Ticket Triage graph builder.
     
-    Multi-turn Aware Graph Flow:
+    Conditional Flow (No Interrupt):
     ```
     START -> ingest -> route_after_ingest
       |-> classify_issue (FULL/RECLASSIFY) -> resolve_order -> draft_reply
       |-> resolve_order (RESOLVE) -> draft_reply
       |-> draft_reply (DRAFT - continuation)
+      |-> admin_review (ADMIN_RESUME) -> draft_reply
     
-    resolve_order handles internally:
+    resolve_order handles:
       - Order ID present -> fetch -> found/not found
       - Email present -> search -> 0/1/N results
       - Neither -> need_identifier
+      - For REPLY: sets suggested_action, admin_approved=None
     
-    draft_reply -> route_after_draft
-      |-> admin_review (if scenario=REPLY) -> route_after_admin_review
-      |     |-> finalize -> END
-      |     |-> draft_reply (if REQUEST_CHANGES)
-      |-> END (if other scenarios - await user input)
+    draft_reply (first run, admin_approved=None):
+      - Generates "ticket raised" acknowledgment
+      - route_after_draft -> END (pending)
+    
+    admin_review (via ADMIN_RESUME route):
+      - Sets admin_approved=True/False based on review_status
+      - -> draft_reply
+    
+    draft_reply (second run, admin_approved=True/False):
+      - Generates final message (approved action or rejection)
+      - route_after_draft -> finalize -> END
     ```
     
     Returns:
@@ -132,7 +124,7 @@ def create_graph() -> StateGraph:
     """
     builder = StateGraph(GraphState)
     
-    # Add nodes (6 nodes)
+    # Add nodes (6 nodes - no prepare_action)
     builder.add_node("ingest", ingest)
     builder.add_node("classify_issue", classify_issue)
     builder.add_node("resolve_order", resolve_order)
@@ -143,7 +135,7 @@ def create_graph() -> StateGraph:
     # Entry point
     builder.add_edge(START, "ingest")
     
-    # After ingest -> route based on context (multi-turn support)
+    # After ingest -> route based on context (multi-turn support + admin resume)
     builder.add_conditional_edges(
         "ingest",
         route_after_ingest,
@@ -151,6 +143,7 @@ def create_graph() -> StateGraph:
             "classify_issue": "classify_issue",
             "resolve_order": "resolve_order",
             "draft_reply": "draft_reply",
+            "admin_review": "admin_review",
         }
     )
     
@@ -158,25 +151,18 @@ def create_graph() -> StateGraph:
     builder.add_edge("classify_issue", "resolve_order")
     builder.add_edge("resolve_order", "draft_reply")
     
-    # After draft -> route based on scenario
+    # After draft -> route based on scenario and admin_approved
     builder.add_conditional_edges(
         "draft_reply",
         route_after_draft,
         {
-            "admin_review": "admin_review",
+            "finalize": "finalize",
             "__end__": END,
         }
     )
     
-    # After admin review -> route based on decision
-    builder.add_conditional_edges(
-        "admin_review",
-        route_after_admin_review,
-        {
-            "finalize": "finalize",
-            "draft_reply": "draft_reply",
-        }
-    )
+    # After admin review -> always go to draft_reply for final message
+    builder.add_edge("admin_review", "draft_reply")
     
     # Final node leads to END
     builder.add_edge("finalize", END)

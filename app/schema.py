@@ -30,6 +30,7 @@ class RoutePath(str, Enum):
     RECLASSIFY = "reclassify"  # New issue detected - reclassify but keep order context
     RESOLVE = "resolve"        # New identifier provided - resolve + draft
     DRAFT = "draft"            # Simple continuation - draft only (use existing context)
+    ADMIN_RESUME = "admin_resume"  # Admin has made decision - route to admin_review
 
 
 class ReviewAction(BaseModel):
@@ -73,13 +74,34 @@ class TriageOutput(BaseModel):
     issue_type: Optional[str] = None
     draft_scenario: Optional[DraftScenario] = None
     draft_reply: Optional[str] = None
+    suggested_action: Optional[str] = Field(default=None, description="Template action awaiting admin approval")
     review_status: Optional[ReviewStatus] = None
     evidence: Optional[str] = None
     recommendation: Optional[str] = None
     candidate_orders: Optional[list[dict]] = None
     messages: list[dict] = Field(default_factory=list)
+    # Backward compatibility fields (from original API)
+    order: Optional[dict] = Field(default=None, description="Full order object (backward compatibility)")
+    reply_text: Optional[str] = Field(default=None, description="Alias for draft_reply (backward compatibility)")
 
 
 class AdminReviewInput(BaseModel):
     """Input for the admin review endpoint."""
     action: ReviewAction
+
+
+class PendingTicket(BaseModel):
+    """Ticket awaiting admin approval."""
+    thread_id: str
+    order_id: Optional[str] = None
+    customer_name: Optional[str] = None
+    issue_type: Optional[str] = None
+    suggested_action: Optional[str] = None
+    draft_reply: Optional[str] = None
+    created_at: Optional[str] = None
+
+
+class PendingTicketsResponse(BaseModel):
+    """Response for GET /admin/review - list of pending tickets."""
+    pending_count: int
+    tickets: list[PendingTicket]
