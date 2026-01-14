@@ -2,7 +2,7 @@
   {
     "order_id": "ORD1001",
     "customer_name": "Ava Chen",
-    "email": "ava.chen@example.com",
+    "email": "ava@example.com",
     "items": [
       {
         "sku": "SKU-100-A",
@@ -11,8 +11,8 @@
       }
     ],
     "order_date": "2025-01-08",
-    "status": "delivered",
-    "delivery_date": "2025-01-12",
+    "status": "shipped",
+    "delivery_date": null,
     "total_amount": 45.99,
     "currency": "USD"
   },
@@ -69,8 +69,8 @@
   },
   {
     "order_id": "ORD1005",
-    "customer_name": "Emily Rivera",
-    "email": "emily.rivera@example.com",
+    "customer_name": "Jordan Park",
+    "email": "user@example.com",
     "items": [
       {
         "sku": "SKU-200-K",
@@ -86,8 +86,8 @@
   },
   {
     "order_id": "ORD1006",
-    "customer_name": "Carlos Gomez",
-    "email": "carlos.gomez@example.com",
+    "customer_name": "Jordan Park",
+    "email": "user@example.com",
     "items": [
       {
         "sku": "SKU-210-J",
@@ -201,6 +201,57 @@
     "status": "delivered",
     "delivery_date": "2025-04-01",
     "total_amount": 219.0,
+    "currency": "USD"
+  },
+  {
+    "order_id": "ORD1013",
+    "customer_name": "Nina Brooks",
+    "email": "nina.brooks@example.com",
+    "items": [
+      {
+        "sku": "SKU-300-X",
+        "name": "Webcam Pro",
+        "quantity": 1
+      }
+    ],
+    "order_date": "2025-04-10",
+    "status": "delivered",
+    "delivery_date": "2025-04-14",
+    "total_amount": 79.99,
+    "currency": "USD"
+  },
+  {
+    "order_id": "ORD1014",
+    "customer_name": "Ethan Stone",
+    "email": "ethan.stone@example.com",
+    "items": [
+      {
+        "sku": "SKU-240-R",
+        "name": "Portable SSD 1TB",
+        "quantity": 1
+      }
+    ],
+    "order_date": "2025-04-02",
+    "status": "delivered",
+    "delivery_date": "2025-04-06",
+    "total_amount": 109.0,
+    "currency": "USD"
+  },
+  {
+    "order_id": "ORD1015",
+    "customer_name": "Grace Lin",
+    "email": "grace.lin@example.com",
+    "items": [
+      {
+        "sku": "SKU-320-Y",
+        "name": "Mechanical Keyboard",
+        "quantity": 1
+      }
+    ],
+    "order_date": "2025-04-18",
+    "status": "delivered",
+    "delivery_date": "2025-04-22",
+    "total_amount": 129.0,
     "currency": "USD"
   }
 ]

@@ -1,0 +1,201 @@
+[
+  {
+    "conversation_id": "P2-DEMO-001",
+    "turns": [
+      {
+        "role": "user",
+        "message": "I'd like a refund for order ORD1001. The mouse is not working."
+      },
+      {
+        "role": "assistant",
+        "message": "We identified a refund request for order ORD1001. Reviewing details..."
+      },
+      {
+        "role": "user",
+        "message": "When will I get the refund?"
+      },
+      {
+        "role": "assistant",
+        "message": "Refund will be issued within 5 business days."
+      }
+    ],
+    "expected_outcome": {
+      "issue_type": "refund_request",
+      "order_id": "ORD1001"
+    }
+  },
+  {
+    "conversation_id": "P2-DEMO-002",
+    "turns": [
+      {
+        "role": "user",
+        "message": "Refund please, it arrived damaged. ORD1002"
+      },
+      {
+        "role": "assistant",
+        "message": "We identified a refund request for order ORD1002. Reviewing details..."
+      },
+      {
+        "role": "user",
+        "message": "Do you also handle damaged items?"
+      },
+      {
+        "role": "assistant",
+        "message": "Yes \u2014 we can help with damaged items, and we\u2019ll proceed with the refund requested for ORD1002."
+      }
+    ],
+    "expected_outcome": {
+      "issue_type": "refund_request",
+      "order_id": "ORD1002"
+    }
+  },
+  {
+    "conversation_id": "P2-DEMO-003",
+    "turns": [
+      {
+        "role": "user",
+        "message": "My order hasn\u2019t arrived. Email: ava@example.com"
+      },
+      {
+        "role": "assistant",
+        "message": "We detected a late delivery. I found your order ORD1001 under ava@example.com and I'm checking the status..."
+      },
+      {
+        "role": "user",
+        "message": "Can you confirm delivery timing?"
+      },
+      {
+        "role": "assistant",
+        "message": "The package is in transit and expected to arrive soon."
+      }
+    ],
+    "expected_outcome": {
+      "issue_type": "late_delivery",
+      "order_id": "ORD1001"
+    }
+  },
+  {
+    "conversation_id": "P2-DEMO-004",
+    "turns": [
+      {
+        "role": "user",
+        "message": "Wrong item delivered. Email: user@example.com"
+      },
+      {
+        "role": "assistant",
+        "message": "I found multiple orders for user@example.com: ORD1005 (Laptop Sleeve) and ORD1006 (Wireless Charger). Which order is this about?"
+      },
+      {
+        "role": "user",
+        "message": "It\u2019s ORD1005"
+      },
+      {
+        "role": "assistant",
+        "message": "We found a wrong item issue for ORD1005. Creating replacement ticket..."
+      },
+      {
+        "role": "user",
+        "message": "Do I need to return the wrong item first?"
+      },
+      {
+        "role": "assistant",
+        "message": "We will send a prepaid return label and ship the correct item."
+      }
+    ],
+    "expected_outcome": {
+      "issue_type": "wrong_item",
+      "order_id": "ORD1005"
+    }
+  },
+  {
+    "conversation_id": "P2-DEMO-005",
+    "turns": [
+      {
+        "role": "user",
+        "message": "I was charged twice"
+      },
+      {
+        "role": "assistant",
+        "message": "I can help with that. Please share your order ID (e.g., ORD1013) or the email used to place the order so I can look it up."
+      },
+      {
+        "role": "user",
+        "message": "Order ID is ORD1013"
+      },
+      {
+        "role": "assistant",
+        "message": "We verified a duplicate charge for order ORD1013. We will refund the extra payment promptly."
+      }
+    ],
+    "expected_outcome": {
+      "issue_type": "duplicate_charge",
+      "order_id": "ORD1013"
+    }
+  },
+  {
+    "conversation_id": "P2-DEMO-006",
+    "turns": [
+      {
+        "role": "user",
+        "message": "Refund. Email: noorders@x.com"
+      },
+      {
+        "role": "assistant",
+        "message": "I couldn\u2019t find any orders for noorders@x.com. Could you double-check the email or share the order ID (e.g., ORD1014)?"
+      },
+      {
+        "role": "user",
+        "message": "Sorry \u2014 the order is ORD1014"
+      },
+      {
+        "role": "assistant",
+        "message": "We identified a refund request for order ORD1014. Reviewing details..."
+      },
+      {
+        "role": "user",
+        "message": "When will I get the refund?"
+      },
+      {
+        "role": "assistant",
+        "message": "Refund will be issued within 5 business days."
+      }
+    ],
+    "expected_outcome": {
+      "issue_type": "refund_request",
+      "order_id": "ORD1014"
+    }
+  },
+  {
+    "conversation_id": "P2-DEMO-007",
+    "turns": [
+      {
+        "role": "user",
+        "message": "I have a question about my purchase"
+      },
+      {
+        "role": "assistant",
+        "message": "Sure \u2014 is this about a refund, delivery delay, missing item, damaged item, wrong item, or a charge issue? If you can, share your order ID or purchase email."
+      },
+      {
+        "role": "user",
+        "message": "It arrived broken. Order ORD1015"
+      },
+      {
+        "role": "assistant",
+        "message": "We detected a damaged item for ORD1015. Reviewing details..."
+      },
+      {
+        "role": "user",
+        "message": "Will I get a replacement?"
+      },
+      {
+        "role": "assistant",
+        "message": "Yes. We will send a replacement for order ORD1015."
+      }
+    ],
+    "expected_outcome": {
+      "issue_type": "damaged_item",
+      "order_id": "ORD1015"
+    }
+  }
+]
