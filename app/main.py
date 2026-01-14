@@ -44,13 +44,13 @@ def remove_pending_ticket(thread_id: str):
     """Remove ticket from pending list after admin review."""
     pending_tickets.pop(thread_id, None)
 
-# Initialize checkpointer for persistence
+# Initialize checkpointer for HITL persistence
 checkpointer = MemorySaver()
 
-# Compile graph with checkpointer (no interrupt - using conditional flow)
+# Compile graph with checkpointer and interrupt before admin_review
 hitl_graph = compile_graph(
     checkpointer=checkpointer,
-    interrupt_before=[]  # No interrupt - admin_review is reached via conditional routing
+    interrupt_before=["admin_review"]
 )
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MOCK_DIR = os.path.join(ROOT, "mock_data")
@@ -105,19 +105,19 @@ def reply_draft(payload: dict):
 @app.post("/triage/invoke", response_model=TriageOutput)
 def triage_invoke_langgraph(body: TriageInput):
     """
-    Invoke the LangGraph ticket triage workflow with conditional HITL support.
+    Invoke the LangGraph ticket triage workflow with HITL support.
     
     This endpoint:
     1. Starts a new triage workflow or continues an existing one
-    2. For REPLY scenarios: returns "ticket raised" message and ends (pending admin)
-    3. Admin uses POST /admin/review to approve/reject, which triggers re-invoke
+    2. Processes until it hits the admin_review interrupt (for REPLY scenarios)
+    3. Returns the current state for admin review or user response
     
     Multi-turn support:
     - For new conversations: creates full initial state
     - For follow-ups: only passes new ticket_text, checkpointer restores context
     
     Scenarios:
-    - REPLY: Generates acknowledgment, returns pending (awaits admin decision)
+    - REPLY: Normal response, goes to admin review
     - NEED_IDENTIFIER: Asks user for order_id or email
     - ORDER_NOT_FOUND: Order ID not found, asks for correct info
     - NO_ORDERS_FOUND: No orders for email, asks to verify
@@ -232,11 +232,10 @@ def list_pending_reviews():
 @app.post("/admin/review", response_model=TriageOutput)
 def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
     """
-    Process admin review and re-invoke the graph with decision.
+    Resume the triage workflow after admin review.
     
     The admin provides a decision (approve/reject/request_changes) and optional feedback.
-    The graph is re-invoked with the updated state - ingest detects ADMIN_RESUME
-    and routes to admin_review node, which sets admin_approved and continues to draft_reply.
+    The graph resumes from the interrupt and continues based on the decision.
     
     Actions:
     - APPROVED: Generates personalized action message
@@ -249,7 +248,7 @@ def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
     config = {"configurable": {"thread_id": thread_id}}
     
     try:
-        # Update state with admin decision
+        # Update state with admin decision before resuming
         hitl_graph.update_state(
             config,
             {
@@ -258,9 +257,8 @@ def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
             }
         )
         
-        # Re-invoke the graph with empty ticket_text
-        # The ingest node will detect review_status change and route to admin_review
-        result = hitl_graph.invoke({"ticket_text": ""}, config)
+        # Resume the graph with None input to continue from checkpoint
+        result = hitl_graph.invoke(None, config)
         
         # Remove from pending after review (unless REQUEST_CHANGES)
         if body.action.status in (ReviewStatus.APPROVED, ReviewStatus.REJECTED):

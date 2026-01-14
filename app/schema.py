@@ -30,7 +30,6 @@ class RoutePath(str, Enum):
     RECLASSIFY = "reclassify"  # New issue detected - reclassify but keep order context
     RESOLVE = "resolve"        # New identifier provided - resolve + draft
     DRAFT = "draft"            # Simple continuation - draft only (use existing context)
-    ADMIN_RESUME = "admin_resume"  # Admin has made decision - route to admin_review
 
 
 class ReviewAction(BaseModel):

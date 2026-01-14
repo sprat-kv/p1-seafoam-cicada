@@ -84,13 +84,11 @@ def ingest(state: GraphState) -> dict[str, Any]:
     Context-aware ingest node for multi-turn conversations.
     
     Determines routing path based on:
-    1. Admin resume scenario (review_status changed from PENDING)
-    2. Existing context (order_details present = follow-up)
-    3. New identifiers in message (order_id, email)
-    4. Issue keywords in message
+    1. Existing context (order_details present = follow-up)
+    2. New identifiers in message (order_id, email)
+    3. Issue keywords in message
     
     Routing logic:
-    - Admin has made decision (APPROVED/REJECTED/REQUEST_CHANGES) → ADMIN_RESUME
     - New conversation (no existing order_details) → FULL
     - New/different order_id in message → FULL (fresh start, clear context)
     - User provides missing identifier → RESOLVE
@@ -107,21 +105,6 @@ def ingest(state: GraphState) -> dict[str, Any]:
     existing_order_id = state.get("order_id")
     existing_order_details = state.get("order_details")
     existing_email = state.get("email")
-    existing_scenario = state.get("draft_scenario")
-    review_status = state.get("review_status")
-    
-    # Add user message to conversation history (only if there's text)
-    messages = [HumanMessage(content=ticket_text)] if ticket_text else []
-    
-    # Check for admin resume scenario FIRST
-    # If this is a REPLY scenario and admin has made a decision, route to admin_review
-    if (existing_scenario == DraftScenario.REPLY and 
-        review_status in (ReviewStatus.APPROVED, ReviewStatus.REJECTED, ReviewStatus.REQUEST_CHANGES)):
-        return {
-            "route_path": RoutePath.ADMIN_RESUME,
-            "messages": messages,
-            "sender": "ingest"
-        }
     
     # Extract identifiers from current message
     new_order_id = extract_order_id(ticket_text)
@@ -129,6 +112,9 @@ def ingest(state: GraphState) -> dict[str, Any]:
     
     # Check for issue keywords in new message
     has_new_issue = check_issue_keywords(ticket_text)
+    
+    # Add user message to conversation history
+    messages = [HumanMessage(content=ticket_text)]
     
     # Routing decision
     if not existing_order_details:
@@ -247,18 +233,6 @@ def classify_issue(state: GraphState) -> dict[str, Any]:
     }
 
 
-def _get_suggested_action(issue_type: str, order_id: str | None, order_details: dict | None) -> str:
-    """Helper to generate suggested_action from template."""
-    customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
-    templates = load_templates()
-    template = next((t["template"] for t in templates if t["issue_type"] == issue_type), None)
-    
-    if template:
-        return template.replace("{{customer_name}}", customer_name).replace("{{order_id}}", order_id or "N/A")
-    else:
-        return f"Process {issue_type} request for order {order_id or 'N/A'}"
-
-
 def resolve_order(state: GraphState) -> dict[str, Any]:
     """
     Unified order resolution node.
@@ -267,21 +241,17 @@ def resolve_order(state: GraphState) -> dict[str, Any]:
     
     1. If order_id is present:
        - Fetch order by ID
-       - If found: scenario=REPLY, set suggested_action, admin_approved=None
+       - If found: scenario=REPLY
        - If not found: scenario=ORDER_NOT_FOUND
     
     2. Else if email is present:
        - Search orders by email
        - 0 results: scenario=NO_ORDERS_FOUND
-       - 1 result: auto-select, scenario=REPLY, set suggested_action, admin_approved=None
+       - 1 result: auto-select, scenario=REPLY
        - N results: scenario=CONFIRM_ORDER
     
     3. Else (no identifier):
        - scenario=NEED_IDENTIFIER
-    
-    For REPLY scenarios, this node also sets:
-    - suggested_action: Template-based action for admin review
-    - admin_approved: None (pending)
     
     Args:
         state: Current graph state.
@@ -291,21 +261,15 @@ def resolve_order(state: GraphState) -> dict[str, Any]:
     """
     order_id = state.get("order_id")
     email = state.get("email")
-    issue_type = state.get("issue_type", "unknown")
     
     # Path 1: Order ID is present - fetch by ID
     if order_id:
         order_details = fetch_order.invoke({"order_id": order_id})
         
         if order_details:
-            # Generate suggested_action for admin review (merged from prepare_action)
-            suggested_action = _get_suggested_action(issue_type, order_id, order_details)
-            
             return {
                 "order_details": order_details,
                 "draft_scenario": DraftScenario.REPLY,
-                "suggested_action": suggested_action,
-                "admin_approved": None,  # Pending admin review
                 "sender": "resolve_order"
             }
         else:
@@ -329,18 +293,11 @@ def resolve_order(state: GraphState) -> dict[str, Any]:
         elif len(candidates) == 1:
             # Exactly one order - auto-select
             order = candidates[0]
-            resolved_order_id = order["order_id"]
-            
-            # Generate suggested_action for admin review (merged from prepare_action)
-            suggested_action = _get_suggested_action(issue_type, resolved_order_id, order)
-            
             return {
-                "order_id": resolved_order_id,
+                "order_id": order["order_id"],
                 "order_details": order,
                 "candidate_orders": candidates,
                 "draft_scenario": DraftScenario.REPLY,
-                "suggested_action": suggested_action,
-                "admin_approved": None,  # Pending admin review
                 "sender": "resolve_order"
             }
         else:
