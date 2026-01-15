@@ -28,9 +28,8 @@ class GraphState(TypedDict):
         draft_scenario: The scenario type for the unified draft node.
         route_path: Routing decision from ingest for multi-turn support.
         suggested_action: Template-based action for admin to review.
-        admin_approved: Admin decision (None=pending, True=approved, False=rejected).
-        review_status: Current status of Admin review.
-        admin_feedback: Feedback from Admin (for edits/rejections).
+        review_status: Current status of Admin review (PENDING, APPROVED, REJECTED).
+        admin_feedback: Feedback from Admin (optional).
         sender: The last node that modified the state.
     """
     messages: Annotated[list, add_messages]
@@ -46,7 +45,6 @@ class GraphState(TypedDict):
     draft_scenario: Optional[DraftScenario]
     route_path: Optional[RoutePath]
     suggested_action: Optional[str]
-    admin_approved: Optional[bool]
-    review_status: ReviewStatus
+    review_status: Optional[ReviewStatus]
     admin_feedback: Optional[str]
     sender: Optional[str]

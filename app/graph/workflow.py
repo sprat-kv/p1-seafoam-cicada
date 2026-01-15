@@ -48,22 +48,21 @@ def route_after_ingest(state: GraphState) -> RouteAfterIngest:
     """
     route_path = state.get("route_path", RoutePath.FULL)
     
-    if route_path in (RoutePath.FULL):
+    if route_path in (RoutePath.FULL, RoutePath.RECLASSIFY):
         return "classify_issue"
+    elif route_path == RoutePath.RESOLVE:
+        return "resolve_order"
     else:
         return "draft_reply"
 
 
 def route_after_draft(state: GraphState) -> RouteAfterDraft:
     """
-    Route after draft based on the scenario and admin_approved state.
+    Route after draft based on the scenario and review_status.
     
     For REPLY scenario:
-    - admin_approved is None -> admin_review (HITL interrupt, first run)
-    - admin_approved is not None -> finalize (second run, after admin_review)
-    
-    Uses admin_approved (set by admin_review node) instead of review_status
-    (set by API) to avoid routing changes when API updates state.
+    - review_status is PENDING (or None) -> admin_review (HITL interrupt, first run)
+    - review_status is APPROVED or REJECTED -> finalize (second run, after admin approval)
     
     All other scenarios end the run and await the next user message.
     
@@ -74,15 +73,15 @@ def route_after_draft(state: GraphState) -> RouteAfterDraft:
         Next node name or END.
     """
     scenario = state.get("draft_scenario")
-    admin_approved = state.get("admin_approved")
+    review_status = state.get("review_status")
     
     if scenario == DraftScenario.REPLY:
-        # Check if already reviewed using admin_approved (set by admin_review node)
-        # admin_approved=None means first run (pending), not None means second run
-        if admin_approved is not None:
+        # Check if already reviewed by admin
+        if review_status in (ReviewStatus.APPROVED, ReviewStatus.REJECTED):
+            # Second run after admin review - finalize
             return "finalize"
         else:
-            # First run - go to admin_review for HITL
+            # First run (PENDING or None) - go to admin_review for HITL
             return "admin_review"
     else:
         # Other scenarios don't need admin approval - return to user
@@ -94,10 +93,9 @@ def route_after_admin_review(state: GraphState) -> RouteAfterAdminReview:
     Route after admin review.
     
     Always routes to draft_reply to generate the appropriate response
-    based on admin_approved flag (set by admin_review node):
-    - admin_approved=True -> draft_reply generates approved action message
-    - admin_approved=False -> draft_reply generates rejection message
-    - admin_approved=None (REQUEST_CHANGES) -> draft_reply re-drafts with feedback
+    based on review_status (set by API):
+    - APPROVED -> draft_reply generates approved action message
+    - REJECTED -> draft_reply generates rejection message
     
     Args:
         state: Current graph state.
@@ -112,12 +110,18 @@ def create_graph() -> StateGraph:
     """
     Create and return the Ticket Triage graph builder.
     
-    Two-Stage Response Flow:
+    Smart Routing Flow:
     ```
     START -> ingest -> route_after_ingest
       |-> classify_issue (FULL/RECLASSIFY) -> resolve_order -> prepare_action -> draft_reply
       |-> resolve_order (RESOLVE) -> prepare_action -> draft_reply
       |-> draft_reply (DRAFT - continuation)
+    
+    Routing paths from ingest:
+      - FULL: Both issue_type and order_details missing
+      - RECLASSIFY: Only issue_type missing (or "unknown")
+      - RESOLVE: Only order_details missing
+      - DRAFT: Both filled (follow-up question)
     
     resolve_order handles internally:
       - Order ID present -> fetch -> found/not found
@@ -126,17 +130,17 @@ def create_graph() -> StateGraph:
     
     prepare_action:
       - Collects suggested_action from template
-      - Sets admin_approved=None (pending)
+      - Sets review_status=PENDING
     
-    draft_reply (first run, admin_approved=None):
+    draft_reply (first run, review_status=PENDING):
       - Generates "ticket raised" acknowledgment
       - route_after_draft -> admin_review (HITL interrupt)
     
     admin_review:
-      - Sets admin_approved=True/False based on review_status
+      - Pass-through checkpoint (review_status set by API)
       - route_after_admin_review -> draft_reply
     
-    draft_reply (second run, admin_approved=True/False):
+    draft_reply (second run, review_status=APPROVED/REJECTED):
       - Generates final message (approved action or rejection)
       - route_after_draft -> finalize -> END
     ```

@@ -83,9 +83,11 @@ def ingest(state: GraphState) -> dict[str, Any]:
       """
       Ingest node for multi-turn conversations.
 
-      Routing logic:
-      - No order_details yet → FULL (extract identifiers, run full pipeline)
-      - Has order_details → DRAFT (follow-up, skip to draft_reply)
+      Smart routing logic - fills missing states only once:
+      - FULL: Both issue_type AND order_details missing → Run classify + resolve
+      - RECLASSIFY: Only issue_type missing (or "unknown") → Run classify only
+      - RESOLVE: Only order_details missing → Run resolve only
+      - DRAFT: Both states filled → Skip to draft (no re-detection)
 
       Args:
           state: Current graph state.
@@ -94,29 +96,41 @@ def ingest(state: GraphState) -> dict[str, Any]:
           Partial state update with extracted information and route_path.
       """
       ticket_text = state.get("ticket_text", "")
+      existing_issue_type = state.get("issue_type")
       existing_order_details = state.get("order_details")
 
       messages = [HumanMessage(content=ticket_text)]
 
-      if existing_order_details:
-          return {
-              "route_path": RoutePath.DRAFT,
-              "draft_scenario": None,      # Reset so draft_reply uses LLM path
-              "admin_approved": None,      # Reset to avoid APPROVED/REJECTED path
-              "messages": messages,
-              "sender": "ingest"
-          }
-      else:
+      # Determine what's missing
+      needs_order = existing_order_details is None
+      needs_issue = existing_issue_type is None or existing_issue_type == "unknown"
+
+      # Extract new info from current message only if needed
+      update = {"messages": messages, "sender": "ingest"}
+
+      if needs_order:
           order_id = extract_order_id(ticket_text)
           email = extract_email(ticket_text)
+          if order_id:
+              update["order_id"] = order_id
+          if email:
+              update["email"] = email
 
-          return {
-              "order_id": order_id,
-              "email": email,
-              "route_path": RoutePath.FULL,
-              "messages": messages,
-              "sender": "ingest"
-          }
+      # Route decision based on what's missing
+      if needs_order and needs_issue:
+          # Both missing → Full pipeline (classify + resolve)
+          update["route_path"] = RoutePath.FULL
+      elif needs_order:
+          # Only order missing → Skip classification, go to resolve
+          update["route_path"] = RoutePath.RESOLVE
+      elif needs_issue:
+          # Only issue missing → Skip resolve, go to classification
+          update["route_path"] = RoutePath.RECLASSIFY
+      else:
+          # Both filled → Skip to draft (follow-up question)
+          update["route_path"] = RoutePath.DRAFT
+
+      return update
 
 
 def classify_issue(state: GraphState) -> dict[str, Any]:
@@ -257,7 +271,7 @@ def prepare_action(state: GraphState) -> dict[str, Any]:
     
     Collects information for admin to review:
     - Looks up suggested action from template based on issue_type
-    - Sets admin_approved to None (pending)
+    - Sets review_status to PENDING (awaiting admin approval)
     
     Only runs for REPLY scenario (issue identified + order found).
     Does NOT generate user message - that's draft_reply's job.
@@ -266,7 +280,7 @@ def prepare_action(state: GraphState) -> dict[str, Any]:
         state: Current graph state.
         
     Returns:
-        Partial state update with suggested_action and admin_approved.
+        Partial state update with suggested_action and review_status.
     """
     issue_type = state.get("issue_type", "unknown")
     order_id = state.get("order_id")
@@ -284,19 +298,19 @@ def prepare_action(state: GraphState) -> dict[str, Any]:
     
     return {
         "suggested_action": suggested_action,
-        "admin_approved": None,  # Pending - triggers "ticket raised" in draft_reply
+        "review_status": ReviewStatus.PENDING,  # Set to PENDING - awaiting admin approval
         "sender": "prepare_action"
     }
 
 
 def draft_reply(state: GraphState) -> dict[str, Any]:
     """
-    Unified draft node that generates responses based on admin approval state.
+    Unified draft node that generates responses based on admin review status.
     
-    For REPLY scenario, response depends on admin_approved:
-    - None (pending): Generate "ticket raised" acknowledgment (no LLM)
-    - True (approved): Generate full action message using LLM
-    - False (rejected): Generate rejection message (no LLM)
+    For REPLY scenario, response depends on review_status:
+    - PENDING (or None): Generate "ticket raised" acknowledgment (no LLM)
+    - APPROVED: Generate full action message using LLM
+    - REJECTED: Generate rejection message (no LLM)
     
     For non-REPLY scenarios (need_identifier, etc.): Use LLM as before.
     
@@ -314,13 +328,13 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
     order_id = state.get("order_id")
     email = state.get("email")
     admin_feedback = state.get("admin_feedback")
-    admin_approved = state.get("admin_approved")
+    review_status = state.get("review_status")
     suggested_action = state.get("suggested_action")
     messages = state.get("messages", [])
     
-    # For REPLY scenario, handle based on admin_approved state
+    # For REPLY scenario, handle based on review_status
     if scenario == DraftScenario.REPLY:
-        if admin_approved is None:
+        if review_status == ReviewStatus.PENDING or review_status is None:
             # PENDING: Generate acknowledgment message (no LLM needed)
             issue_labels = {
                 "refund_request": "refund request",
@@ -351,7 +365,7 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
                 "sender": "draft_reply"
             }
         
-        elif admin_approved is True:
+        elif review_status == ReviewStatus.APPROVED:
             # APPROVED: Generate full action message using LLM
             # Use suggested_action as base and personalize with LLM
             customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
@@ -388,7 +402,7 @@ Admin feedback: {admin_feedback or 'None'}"""
                 "sender": "draft_reply"
             }
         
-        else:  # admin_approved is False
+        else:  # review_status == ReviewStatus.REJECTED
             # REJECTED: Generate rejection message (no LLM needed)
             customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
             
@@ -500,36 +514,24 @@ Keep responses concise, friendly, and professional. Do not include internal note
 
 def admin_review(state: GraphState) -> dict[str, Any]:
     """
-    Admin Review node: Process the Admin's review decision.
+    Admin Review node: Checkpoint for admin approval.
     
     This node is reached after the graph resumes from interrupt.
-    The review_status and admin_feedback are set externally before resuming.
+    The review_status and admin_feedback are set externally by the API before resuming.
     
-    Sets admin_approved based on review_status:
-    - APPROVED → True
-    - REJECTED → False
-    - REQUEST_CHANGES → None (triggers re-draft)
-    - PENDING → None
+    This is a pass-through node that validates the review_status was set.
+    The actual routing decision is made by route_after_admin_review, which always
+    goes to draft_reply to generate the appropriate response based on review_status.
     
     Args:
         state: Current graph state.
         
     Returns:
-        Partial state update with admin_approved flag.
+        Partial state update with sender only (pass-through).
     """
-    review_status = state.get("review_status", ReviewStatus.PENDING)
-    
-    # Set admin_approved based on review_status
-    if review_status == ReviewStatus.APPROVED:
-        admin_approved = True
-    elif review_status == ReviewStatus.REJECTED:
-        admin_approved = False
-    else:
-        # REQUEST_CHANGES or PENDING - keep None to trigger re-draft with feedback
-        admin_approved = None
-    
+    # Just mark that we passed through this node
+    # The review_status is already set by the API
     return {
-        "admin_approved": admin_approved,
         "sender": "admin_review"
     }
 

@@ -12,7 +12,6 @@ class ReviewStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
-    REQUEST_CHANGES = "request_changes"
 
 
 class DraftScenario(str, Enum):
@@ -26,8 +25,10 @@ class DraftScenario(str, Enum):
 
 class RoutePath(str, Enum):
     """Routing path after ingest for multi-turn conversation support."""
-    FULL = "full"              # New conversation - run full pipeline
-    DRAFT = "draft"            # Simple continuation - draft only (use existing context)
+    FULL = "full"              # Both missing - run full pipeline (classify + resolve)
+    RECLASSIFY = "reclassify"  # Only issue missing - run classification only
+    RESOLVE = "resolve"        # Only order missing - run order resolution only
+    DRAFT = "draft"            # Both filled - skip to draft (no re-detection)
 
 
 class ReviewAction(BaseModel):

@@ -155,7 +155,6 @@ def triage_invoke_langgraph(body: TriageInput):
                 "draft_scenario": None,
                 "route_path": None,
                 "suggested_action": None,
-                "admin_approved": None,
                 "review_status": None,
                 "admin_feedback": None,
                 "sender": None,
@@ -234,12 +233,11 @@ def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
     """
     Resume the triage workflow after admin review.
     
-    The admin provides a decision (approve/reject/request_changes) and optional feedback.
+    The admin provides a decision (approve/reject) and optional feedback.
     The graph resumes from the interrupt and continues based on the decision.
     
     Actions:
-    - APPROVED: Generates personalized action message
-    - REQUEST_CHANGES: Re-drafts with admin feedback
+    - APPROVED: Generates personalized action message using LLM
     - REJECTED: Generates rejection message
     """
     if not thread_id:
@@ -260,7 +258,7 @@ def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
         # Resume the graph with None input to continue from checkpoint
         result = hitl_graph.invoke(None, config)
         
-        # Remove from pending after review (unless REQUEST_CHANGES)
+        # Remove from pending after review
         if body.action.status in (ReviewStatus.APPROVED, ReviewStatus.REJECTED):
             remove_pending_ticket(thread_id)
         
