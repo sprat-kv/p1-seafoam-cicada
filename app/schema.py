@@ -27,8 +27,6 @@ class DraftScenario(str, Enum):
 class RoutePath(str, Enum):
     """Routing path after ingest for multi-turn conversation support."""
     FULL = "full"              # New conversation - run full pipeline
-    RECLASSIFY = "reclassify"  # New issue detected - reclassify but keep order context
-    RESOLVE = "resolve"        # New identifier provided - resolve + draft
     DRAFT = "draft"            # Simple continuation - draft only (use existing context)
 
 

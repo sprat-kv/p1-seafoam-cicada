@@ -48,11 +48,9 @@ def route_after_ingest(state: GraphState) -> RouteAfterIngest:
     """
     route_path = state.get("route_path", RoutePath.FULL)
     
-    if route_path in (RoutePath.FULL, RoutePath.RECLASSIFY):
+    if route_path in (RoutePath.FULL):
         return "classify_issue"
-    elif route_path == RoutePath.RESOLVE:
-        return "resolve_order"
-    else:  # DRAFT
+    else:
         return "draft_reply"
 
 

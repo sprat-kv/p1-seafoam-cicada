@@ -80,107 +80,43 @@ def extract_email(text: str) -> str | None:
 
 
 def ingest(state: GraphState) -> dict[str, Any]:
-    """
-    Context-aware ingest node for multi-turn conversations.
-    
-    Determines routing path based on:
-    1. Existing context (order_details present = follow-up)
-    2. New identifiers in message (order_id, email)
-    3. Issue keywords in message
-    
-    Routing logic:
-    - New conversation (no existing order_details) → FULL
-    - New/different order_id in message → FULL (fresh start, clear context)
-    - User provides missing identifier → RESOLVE
-    - New issue keywords detected → RECLASSIFY (keep order context)
-    - Simple continuation question → DRAFT
-    
-    Args:
-        state: Current graph state.
-        
-    Returns:
-        Partial state update with extracted information and route_path.
-    """
-    ticket_text = state.get("ticket_text", "")
-    existing_order_id = state.get("order_id")
-    existing_order_details = state.get("order_details")
-    existing_email = state.get("email")
-    
-    # Extract identifiers from current message
-    new_order_id = extract_order_id(ticket_text)
-    new_email = extract_email(ticket_text)
-    
-    # Check for issue keywords in new message
-    has_new_issue = check_issue_keywords(ticket_text)
-    
-    # Add user message to conversation history
-    messages = [HumanMessage(content=ticket_text)]
-    
-    # Routing decision
-    if not existing_order_details:
-        # No prior context - full pipeline
-        route_path = RoutePath.FULL
-        order_id = new_order_id or existing_order_id
-        email = new_email or existing_email
-        
-        return {
-            "order_id": order_id,
-            "email": email,
-            "route_path": route_path,
-            "messages": messages,
-            "sender": "ingest"
-        }
-    
-    elif new_order_id and new_order_id != existing_order_id:
-        # Different order - fresh start (clear all context)
-        route_path = RoutePath.FULL
-        
-        return {
-            "ticket_text": ticket_text,
-            "order_id": new_order_id,
-            "email": new_email,  # Reset email too
-            "order_details": None,      # Clear
-            "candidate_orders": None,   # Clear
-            "draft_scenario": None,     # Clear
-            "issue_type": None,         # Clear for fresh classification
-            "route_path": route_path,
-            "messages": messages,
-            "sender": "ingest"
-        }
-    
-    elif new_order_id or new_email:
-        # User provided missing/new identifier - resolve
-        route_path = RoutePath.RESOLVE
-        order_id = new_order_id or existing_order_id
-        email = new_email or existing_email
-        
-        return {
-            "order_id": order_id,
-            "email": email,
-            "route_path": route_path,
-            "messages": messages,
-            "sender": "ingest"
-        }
-    
-    elif has_new_issue:
-        # New issue keywords detected - reclassify but keep order context
-        route_path = RoutePath.RECLASSIFY
-        
-        return {
-            "route_path": route_path,
-            "messages": messages,
-            "sender": "ingest"
-        }
-    
-    else:
-        # Simple continuation - draft only (use all existing context)
-        route_path = RoutePath.DRAFT
-        
-        return {
-            "route_path": route_path,
-            "messages": messages,
-            "sender": "ingest"
-        }
+      """
+      Ingest node for multi-turn conversations.
+
+      Routing logic:
+      - No order_details yet → FULL (extract identifiers, run full pipeline)
+      - Has order_details → DRAFT (follow-up, skip to draft_reply)
+
+      Args:
+          state: Current graph state.
+
+      Returns:
+          Partial state update with extracted information and route_path.
+      """
+      ticket_text = state.get("ticket_text", "")
+      existing_order_details = state.get("order_details")
+
+      messages = [HumanMessage(content=ticket_text)]
+
+      if existing_order_details:
+          return {
+              "route_path": RoutePath.DRAFT,
+              "draft_scenario": None,      # Reset so draft_reply uses LLM path
+              "admin_approved": None,      # Reset to avoid APPROVED/REJECTED path
+              "messages": messages,
+              "sender": "ingest"
+          }
+      else:
+          order_id = extract_order_id(ticket_text)
+          email = extract_email(ticket_text)
+
+          return {
+              "order_id": order_id,
+              "email": email,
+              "route_path": RoutePath.FULL,
+              "messages": messages,
+              "sender": "ingest"
+          }
 
 
 def classify_issue(state: GraphState) -> dict[str, Any]:
