@@ -305,14 +305,15 @@ def prepare_action(state: GraphState) -> dict[str, Any]:
 
 def draft_reply(state: GraphState) -> dict[str, Any]:
     """
-    Unified draft node that generates responses based on admin review status.
+    Unified draft node that generates responses based on scenario and review status.
     
-    For REPLY scenario, response depends on review_status:
-    - PENDING (or None): Generate "ticket raised" acknowledgment (no LLM)
-    - APPROVED: Generate full action message using LLM
-    - REJECTED: Generate rejection message (no LLM)
+    For REPLY scenario, conditions are checked in order:
+    1. If issue_type is unknown: Ask customer for issue details
+    2. If review_status is PENDING/None: Generate action-oriented acknowledgment
+    3. If review_status is APPROVED: Use template from replies.json
+    4. If review_status is REJECTED: Generate subtle rejection with email mention
     
-    For non-REPLY scenarios (need_identifier, etc.): Use LLM as before.
+    For non-REPLY scenarios (need_identifier, etc.): Use LLM to generate response.
     
     Args:
         state: Current graph state.
@@ -334,21 +335,37 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
     
     # For REPLY scenario, handle based on review_status
     if scenario == DraftScenario.REPLY:
-        if review_status == ReviewStatus.PENDING or review_status is None:
-            # PENDING: Generate acknowledgment message (no LLM needed)
-            issue_labels = {
-                "refund_request": "refund request",
-                "wrong_item": "wrong item issue",
-                "missing_item": "missing item",
-                "late_delivery": "delivery delay",
-                "damaged_item": "damaged item report",
-                "duplicate_charge": "duplicate charge",
-                "defective_product": "defective product report",
-            }
-            issue_label = issue_labels.get(issue_type, "issue")
-            customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+        customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+        
+        # Phase 1: Check if issue_type is unknown - ask for issue details
+        if issue_type is None or issue_type == "unknown":
+            draft = f"Hi {customer_name}, we found your order {order_id}. Could you please describe the issue you're experiencing so we can assist you better?"
             
-            draft = f"Hi {customer_name}, we identified a {issue_label} for order {order_id}. Your ticket has been raised and is under review. We will update you shortly."
+            return {
+                "draft_reply": draft,
+                "draft_scenario": DraftScenario.NEED_IDENTIFIER,  # Reuse for "need more info"
+                "evidence": f"Scenario: need_issue_details, Order ID: {order_id}",
+                "recommendation": "Awaiting issue details from customer",
+                "messages": [AIMessage(content=draft)],
+                "review_status": None,
+                "sender": "draft_reply"
+            }
+        
+        # Phase 2: PENDING - Action-oriented acknowledgment message
+        if review_status == ReviewStatus.PENDING or review_status is None:
+            # Define action-oriented messages per issue type
+            issue_actions = {
+                "refund_request": ("refund request", "Processing refund..."),
+                "wrong_item": ("wrong item issue", "Creating replacement ticket..."),
+                "missing_item": ("missing item", "Opening investigation..."),
+                "late_delivery": ("delivery delay", "Checking shipment status..."),
+                "damaged_item": ("damaged item report", "Arranging replacement..."),
+                "duplicate_charge": ("duplicate charge", "Verifying transaction..."),
+                "defective_product": ("defective product", "Verifying warranty..."),
+            }
+            
+            label, action = issue_actions.get(issue_type, ("issue", "Reviewing your case..."))
+            draft = f"Hi {customer_name}, we detected a {label} for {order_id}. {action}"
             
             # Create evidence and recommendation
             evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}"
@@ -365,31 +382,17 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
                 "sender": "draft_reply"
             }
         
+        # Phase 3: APPROVED - Use template from replies.json (no LLM)
         elif review_status == ReviewStatus.APPROVED:
-            # APPROVED: Generate full action message using LLM
-            # Use suggested_action as base and personalize with LLM
-            customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+            # Use template from replies.json directly
+            templates = load_templates()
+            template = next(
+                (t["template"] for t in templates if t["issue_type"] == issue_type),
+                "Hi {{customer_name}}, your request for order {{order_id}} has been approved. We will process it shortly."
+            )
             
-            system_prompt = f"""You are a customer support assistant. Generate a professional response confirming the approved action for the customer.
-
-The admin has APPROVED the following action:
-{suggested_action}
-
-Personalize and enhance this message while keeping the same intent. Be warm, professional, and reassuring.
-Include any relevant details about next steps or timeline if appropriate."""
-
-            user_message = f"""Customer: {customer_name}
-Order ID: {order_id}
-Issue Type: {issue_type}
-Order Status: {order_details.get('status', 'N/A') if order_details else 'N/A'}
-Admin feedback: {admin_feedback or 'None'}"""
-
-            response = get_llm().invoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=user_message)
-            ])
+            draft = template.replace("{{customer_name}}", customer_name).replace("{{order_id}}", order_id or "N/A")
             
-            draft = response.content
             evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: APPROVED"
             recommendation = f"Approved {issue_type} resolution for order {order_id}"
             
@@ -402,11 +405,9 @@ Admin feedback: {admin_feedback or 'None'}"""
                 "sender": "draft_reply"
             }
         
+        # Phase 4: REJECTED - Subtle rejection with email mention
         else:  # review_status == ReviewStatus.REJECTED
-            # REJECTED: Generate rejection message (no LLM needed)
-            customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
-            
-            draft = f"Hi {customer_name}, we reviewed your request regarding order {order_id} and found no issues with the order at this time. We cannot proceed with the requested action. If you believe this is an error, please provide additional details or contact us with more information."
+            draft = f"Hi {customer_name}, thank you for reaching out regarding order {order_id}. After reviewing your request, we are unable to proceed at this time. Please check your email for more details on next steps."
             
             evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: REJECTED"
             recommendation = f"Rejected {issue_type} request for order {order_id}"
