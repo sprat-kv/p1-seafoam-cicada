@@ -1,0 +1,242 @@
+"use client";
+
+import { useState, useEffect, useRef } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Card, CardHeader, CardContent } from "@/components/ui/card";
+import { MessageBubble } from "./message-bubble";
+import { TypingIndicator } from "./typing-indicator";
+import { triageInvoke } from "@/lib/api";
+import { Message } from "@/lib/types";
+import { Send, CheckCircle2, Minus, X } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+interface TriageChatProps {
+    isOpen: boolean;
+    onMinimize: () => void;
+    onClose: () => void;
+    onSessionStart: () => void;
+}
+
+const THREAD_ID_KEY = "triage_thread_id";
+
+export function TriageChat({ isOpen, onMinimize, onClose, onSessionStart }: TriageChatProps) {
+    const [messages, setMessages] = useState<Message[]>([]);
+    const [input, setInput] = useState("");
+    const [isLoading, setIsLoading] = useState(false);
+    const [threadId, setThreadId] = useState<string | null>(null);
+    const [conversationEnded, setConversationEnded] = useState(false);
+    const scrollAreaRef = useRef<HTMLDivElement>(null);
+
+    // Load thread_id from localStorage on mount
+    useEffect(() => {
+        const savedThreadId = localStorage.getItem(THREAD_ID_KEY);
+        if (savedThreadId) {
+            setThreadId(savedThreadId);
+        }
+    }, []);
+
+    // Auto-scroll to bottom when messages change
+    useEffect(() => {
+        if (scrollAreaRef.current) {
+            const scrollContainer = scrollAreaRef.current.querySelector(
+                "[data-radix-scroll-area-viewport]"
+            );
+            if (scrollContainer) {
+                scrollContainer.scrollTop = scrollContainer.scrollHeight;
+            }
+        }
+    }, [messages, isLoading]);
+
+    const handleSendMessage = async () => {
+        if (!input.trim() || isLoading || conversationEnded) return;
+
+        const userMessage: Message = {
+            role: "user",
+            content: input.trim(),
+            timestamp: new Date(),
+        };
+
+        setMessages((prev) => [...prev, userMessage]);
+        setInput("");
+        setIsLoading(true);
+
+        // Notify parent that session has started
+        if (messages.length === 0) {
+            onSessionStart();
+        }
+
+        try {
+            const response = await triageInvoke({
+                ticket_text: userMessage.content,
+                thread_id: threadId,
+            });
+
+            // Save thread_id
+            if (response.thread_id && response.thread_id !== threadId) {
+                setThreadId(response.thread_id);
+                localStorage.setItem(THREAD_ID_KEY, response.thread_id);
+            }
+
+            // Add agent response
+            const agentMessage: Message = {
+                role: "assistant",
+                content: response.draft_reply || response.reply_text || "Processing your request...",
+                timestamp: new Date(),
+            };
+
+            setMessages((prev) => [...prev, agentMessage]);
+        } catch (error) {
+            console.error("Error sending message:", error);
+            const errorMessage: Message = {
+                role: "assistant",
+                content:
+                    "Sorry, I encountered an error. Please try again or contact support.",
+                timestamp: new Date(),
+            };
+            setMessages((prev) => [...prev, errorMessage]);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleClose = () => {
+        setConversationEnded(true);
+        // Remove thread persistence when conversation is manually ended
+        localStorage.removeItem(THREAD_ID_KEY);
+        setThreadId(null);
+    };
+
+    const handleEndSession = () => {
+        setMessages([]);
+        setThreadId(null);
+        localStorage.removeItem(THREAD_ID_KEY);
+        setConversationEnded(false);
+        onClose();
+    };
+
+    const handleNewConversation = () => {
+        setMessages([]);
+        setThreadId(null);
+        localStorage.removeItem(THREAD_ID_KEY);
+        setConversationEnded(false);
+        // Don't close, just reset
+    };
+
+    const handleKeyPress = (e: React.KeyboardEvent) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleSendMessage();
+        }
+    };
+
+    if (!isOpen) return null;
+
+    return (
+        <Card className="fixed bottom-24 right-6 w-[400px] max-w-[calc(100vw-2rem)] h-[600px] max-h-[calc(100vh-8rem)] shadow-2xl flex flex-col z-40 border-primary/20 animate-in slide-in-from-bottom-10 fade-in-0 sm:right-6">
+            <CardHeader className="px-4 py-3 border-b bg-primary/5 rounded-t-xl shrink-0">
+                <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-sm flex items-center gap-2">
+                        <span className="relative flex h-2.5 w-2.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+                        </span>
+                        Customer Support
+                    </h3>
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={onMinimize}
+                            className="h-7 w-7 hover:bg-muted"
+                            title="Minimize"
+                        >
+                            <Minus className="h-4 w-4" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={handleEndSession}
+                            className="h-7 w-7 hover:bg-destructive/10 hover:text-destructive"
+                            title="Close Chat"
+                        >
+                            <X className="h-4 w-4" />
+                        </Button>
+                    </div>
+                </div>
+            </CardHeader>
+
+            <CardContent className="flex-1 overflow-hidden p-0 flex flex-col bg-background/50 backdrop-blur-sm">
+                {conversationEnded ? (
+                    <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-4 animate-in fade-in-50 zoom-in-95">
+                        <div className="bg-green-100 dark:bg-green-900/30 p-4 rounded-full mb-2">
+                            <CheckCircle2 className="h-10 w-10 text-green-600 dark:text-green-500" />
+                        </div>
+                        <h3 className="text-lg font-semibold text-center">Conversation Ended</h3>
+                        <p className="text-sm text-muted-foreground text-center max-w-[250px]">
+                            Thank you for contacting support. Your ticket has been submitted for review.
+                        </p>
+                        <Button onClick={handleNewConversation} className="mt-4 w-full">
+                            Start New Conversation
+                        </Button>
+                    </div>
+                ) : (
+                    <>
+                        <ScrollArea className="flex-1 px-4" ref={scrollAreaRef}>
+                            {messages.length === 0 ? (
+                                <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground py-8 px-4 opacity-70">
+                                    <p className="text-sm">Hi! I'm here to help with your order issues.</p>
+                                    <p className="text-sm mt-1">How can I assist you today?</p>
+                                </div>
+                            ) : (
+                                <div className="py-4 space-y-4">
+                                    {messages.map((message, index) => (
+                                        <MessageBubble key={index} message={message} />
+                                    ))}
+                                    {isLoading && (
+                                        <div className="flex gap-2 mb-2 items-center text-muted-foreground text-xs pl-1">
+                                            <span className="h-6 w-6 flex items-center justify-center rounded-full bg-muted border">🤖</span>
+                                            <TypingIndicator />
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </ScrollArea>
+
+                        <div className="p-4 border-t bg-background shrink-0">
+                            <div className="flex gap-2">
+                                <Input
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    onKeyPress={handleKeyPress}
+                                    placeholder="Type your message..."
+                                    disabled={isLoading}
+                                    className="flex-1"
+                                    autoFocus
+                                />
+                                <Button
+                                    onClick={handleSendMessage}
+                                    disabled={!input.trim() || isLoading}
+                                    size="icon"
+                                >
+                                    <Send className="h-4 w-4" />
+                                </Button>
+                            </div>
+                            <div className="flex justify-center mt-2">
+                                <Button
+                                    onClick={handleClose}
+                                    variant="ghost"
+                                    size="sm"
+                                    className="text-[10px] h-6 text-muted-foreground hover:text-destructive"
+                                >
+                                    End Session (Archive)
+                                </Button>
+                            </div>
+                        </div>
+                    </>
+                )}
+            </CardContent>
+        </Card>
+    );
+}
