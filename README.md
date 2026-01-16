@@ -9,6 +9,7 @@ A token-optimized LangGraph orchestrator for customer support ticket triage with
 - **Unified Order Resolution** - Single node handles ID lookup, email search, and user selection
 - **Smart Classification** - Priority-based keyword matching with tie-breaker logic
 - **Human-in-the-Loop** - Admin review checkpoint for critical responses
+- **Contextual Responses** - LLM-generated replies with conversation memory for natural interactions
 - **Token Optimized** - 70-80% token reduction vs traditional approaches
 - **Modern Python** - Supports both `uv` and `pip`
 
@@ -37,7 +38,7 @@ flowchart TD
 | `classify_issue` | Priority-based keyword classification (skipped if issue already known) |
 | `resolve_order` | Unified order resolution (fetch by ID, search by email, or ask for identifier) |
 | `prepare_action` | Prepares the suggested action and sets review status to PENDING |
-| `draft_reply` | Unified draft node for all response types (pending, approved, rejected, info request) |
+| `draft_reply` | Unified draft node generating contextual responses using LLM for all scenarios |
 | `admin_review` | Pass-through checkpoint for HITL admin approval |
 | `finalize` | Mark response as approved and save final state |
 
@@ -58,8 +59,8 @@ This system implements a robust HITL pattern using LangGraph's checkpointing cap
 1. **Interrupt Mechanism**: The graph is compiled with `interrupt_before=["admin_review"]`. When the workflow reaches this node, it pauses execution and saves the state to the checkpointer.
 2. **Persistence**: We use `MemorySaver` (in-memory checkpointer) to persist state between turns. In production, this can be swapped for a database-backed checkpointer (Postgres, Redis).
 3. **Two-Stage Response**:
-   - **Stage 1 (Pending)**: System generates a "ticket raised" acknowledgment for the user and a `suggested_action` for the admin.
-   - **Stage 2 (Final)**: After admin approval, the system generates the final resolution message using approved templates.
+   - **Stage 1 (Pending)**: System generates a contextual acknowledgment for the user and a `suggested_action` for the admin.
+   - **Stage 2 (Final)**: After admin approval, the system generates the final resolution message with conversation context.
 4. **Admin Review Flow**:
    - Graph pauses at `admin_review`
    - Admin API calls `update_state` to set `review_status` (APPROVED/REJECTED)
@@ -207,7 +208,7 @@ Health check endpoint.
 | **Classification** | **Deterministic** (Regex/Keyword) - No LLM usage |
 | **Routing** | **Deterministic** (State-based) - No LLM usage |
 | **Order Resolution** | **Tool-based** - No LLM usage |
-| **Drafting** | **Hybrid** - Templates for approved/rejected, LLM only for generic queries |
+| **Drafting** | **LLM-powered** - Contextual responses with conversation memory and template guidance |
 | **Follow-ups** | **Context Aware** - Skips unnecessary steps (Classification/Resolution) |
 
 ## Quick Start

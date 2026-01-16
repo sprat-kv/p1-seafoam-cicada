@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages.utils import trim_messages
 from langchain_openai import ChatOpenAI
 
 from app.graph.state import GraphState
@@ -303,17 +304,268 @@ def prepare_action(state: GraphState) -> dict[str, Any]:
     }
 
 
+def generate_draft_with_llm(
+    scenario: DraftScenario,
+    phase: str,
+    state: GraphState,
+    templates: list[dict]
+) -> str:
+    """
+    Generate customer response using LLM with conversation context and guidelines.
+    
+    Args:
+        scenario: Current draft scenario (REPLY, NEED_IDENTIFIER, etc.)
+        phase: Specific phase for REPLY scenario (unknown/pending/approved/rejected)
+        state: Current graph state with all context
+        templates: Reply templates to use as few-shot examples
+        
+    Returns:
+        Generated response text
+    """
+    # Extract state information
+    issue_type = state.get("issue_type", "unknown")
+    order_details = state.get("order_details")
+    order_id = state.get("order_id")
+    ticket_text = state.get("ticket_text", "")
+    messages = state.get("messages", [])
+    candidate_orders = state.get("candidate_orders", [])
+    
+    customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+    
+    # Get last 5 message exchanges using LangChain's trim_messages utility
+    history_section = ""
+    if messages and len(messages) > 1:
+        # Keep last 10 messages (5 exchanges: customer + agent pairs), excluding current
+        recent_messages = trim_messages(
+            messages[:-1],  # Exclude current message
+            strategy="last",
+            max_tokens=2000,  # Reasonable limit for conversation context
+            start_on="human",
+            end_on=("human", "ai"),
+        )
+        
+        # Format for prompt
+        history_parts = []
+        for msg in recent_messages:
+            if isinstance(msg, HumanMessage):
+                role = "Customer"
+            elif isinstance(msg, AIMessage):
+                role = "Agent"
+            else:
+                continue
+            
+            content = msg.content if hasattr(msg, "content") else str(msg)
+            # Skip final messages and system messages
+            if not content.startswith("[FINAL]") and not content.startswith("[SYSTEM]"):
+                history_parts.append(f"{role}: {content}")
+        
+        if history_parts:
+            history_section = f"\n\n## Recent Conversation\n" + "\n".join(history_parts) + "\n"
+    
+    # Build few-shot examples from templates
+    few_shot_examples = "\n".join([
+        f"**{t['issue_type']}**: {t['template']}"
+        for t in templates
+    ])
+    
+    # Phase-specific system prompts
+    if scenario == DraftScenario.REPLY:
+        if phase == "unknown":
+            system_prompt = f"""You are an empathetic customer support agent for an e-commerce company.
+
+## Context
+Customer: {customer_name}
+Order ID: {order_id}
+Current Issue: Unknown - need more details
+{history_section}
+## Your Task
+The customer has provided their order ID but hasn't described their issue clearly. Politely ask them to describe what's wrong with their order so you can help them effectively.
+
+## Response Guidelines
+- Be warm and patient
+- Thank them for providing the order information
+- Make it easy for them to describe the issue (open-ended question)
+- Keep it conversational and brief
+- Use their name if available
+
+## Example Tone (adapt, don't copy)
+{few_shot_examples}
+
+Generate a response that asks for issue details naturally."""
+
+        elif phase == "pending":
+            # Get action-oriented context
+            action_map = {
+                "refund_request": "processing your refund",
+                "wrong_item": "arranging a replacement",
+                "missing_item": "investigating the missing item",
+                "late_delivery": "checking shipment status",
+                "damaged_item": "preparing a replacement",
+                "duplicate_charge": "verifying the charge",
+                "defective_product": "reviewing warranty coverage",
+            }
+            action = action_map.get(issue_type, "reviewing your case")
+            
+            system_prompt = f"""You are an empathetic customer support agent for an e-commerce company.
+
+## Context
+Customer: {customer_name}
+Order ID: {order_id}
+Issue Type: {issue_type}
+Status: Under Review (pending admin approval)
+Current Action: {action}
+{history_section}
+## Your Task
+Acknowledge the customer's issue and let them know you're actively working on it. The ticket is with our team for approval, but frame it as "we're on it" rather than "waiting for approval".
+
+## Response Guidelines
+- Be reassuring and action-oriented
+- Show empathy for their situation
+- Indicate active work is happening (not passive waiting)
+- Keep it brief and professional
+- Avoid mentioning "admin approval" or internal processes
+
+## Example Tone and Structure
+{few_shot_examples}
+
+Generate a response that acknowledges their {issue_type} issue and shows you're actively helping."""
+
+        elif phase == "approved":
+            # Find matching template for structure guidance
+            template_example = next(
+                (t["template"] for t in templates if t["issue_type"] == issue_type),
+                "Hi {{customer_name}}, we've reviewed order {{order_id}} and will resolve this for you."
+            )
+            
+            system_prompt = f"""You are an empathetic customer support agent for an e-commerce company.
+
+## Context
+Customer: {customer_name}
+Order ID: {order_id}
+Issue Type: {issue_type}
+Status: APPROVED - Resolution confirmed
+{history_section}
+## Your Task
+Inform the customer that their issue has been resolved/approved. Be warm, reassuring, and specific about what will happen next.
+
+## Response Guidelines
+- Start with their name
+- Acknowledge their issue with empathy
+- Clearly state the resolution
+- Be specific about next steps (refund processing, replacement shipping, etc.)
+- Keep it warm but professional
+- Don't over-promise timelines unless you're certain
+
+## Template Example for {issue_type}
+{template_example}
+
+Use this template as a structural guide, but personalize it based on the conversation history and add appropriate empathy/details.
+
+Generate a resolution confirmation response."""
+
+        elif phase == "rejected":
+            system_prompt = f"""You are an empathetic customer support agent for an e-commerce company.
+
+## Context
+Customer: {customer_name}
+Order ID: {order_id}
+Issue Type: {issue_type}
+Status: REJECTED - Cannot proceed with request
+{history_section}
+## Your Task
+Politely inform the customer that we're unable to proceed with their request at this time. Be respectful, brief, and direct them to check email for detailed explanation.
+
+## Response Guidelines
+- Start with their name
+- Thank them for reaching out
+- State clearly but gently that we cannot proceed
+- Direct them to email for more details (don't explain rejection reasons in chat)
+- Keep tone respectful and professional
+- Don't apologize excessively
+
+## Example Structure
+"Hi [Name], thank you for reaching out about order [ID]. After reviewing your request, we're unable to proceed at this time. Please check your email for more information about this decision."
+
+Generate a rejection response that is respectful but clear."""
+
+    else:
+        # Non-REPLY scenarios (need_identifier, order_not_found, etc.)
+        candidates_str = ""
+        if candidate_orders:
+            candidates_str = "\n".join([
+                f"- Order {o['order_id']}: {o['items'][0]['name'] if o.get('items') else 'N/A'} ({o.get('status', 'N/A')})"
+                for o in candidate_orders
+            ])
+        
+        # Build orders section if there are candidates
+        orders_section = ""
+        if candidates_str:
+            orders_section = f"\n## Orders Found\n{candidates_str}\n"
+        
+        system_prompt = f"""You are a helpful customer support agent for an e-commerce company.
+
+## Context
+Scenario: {scenario.value}
+Customer Message: {ticket_text}
+{history_section}
+## Response Guidelines by Scenario
+
+**need_identifier**: 
+- Politely ask for their order ID (format: ORD followed by numbers) OR email address
+- Make it easy for them to provide information
+- Be friendly and understanding
+
+**order_not_found**: 
+- Acknowledge they provided an order ID but we couldn't locate it
+- Ask them to verify the order number or provide their email as alternative
+- Be helpful and understanding (they might have a typo)
+
+**no_orders_found**: 
+- Acknowledge the email they provided
+- Explain we couldn't find orders under that email
+- Ask them to verify the email or provide order ID instead
+- Remain helpful and patient
+
+**confirm_order**: 
+- List the orders found (see below)
+- Ask them to specify which order they're inquiring about
+- Make selection easy and clear
+{orders_section}
+## Tone
+- Friendly and conversational
+- Patient and understanding
+- Professional but not robotic
+- Brief and clear
+
+## Example Templates (for tone reference)
+{few_shot_examples}
+
+Generate an appropriate response for the {scenario.value} scenario."""
+
+    # Build user message with current context
+    user_message = f"Current customer message: {ticket_text}"
+    
+    # Invoke LLM with system prompt and user message
+    response = get_llm().invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_message)
+    ])
+    
+    return response.content.strip()
+
+
 def draft_reply(state: GraphState) -> dict[str, Any]:
     """
-    Unified draft node that generates responses based on scenario and review status.
+    Unified draft node that generates responses using LLM for all scenarios.
     
-    For REPLY scenario, conditions are checked in order:
-    1. If issue_type is unknown: Ask customer for issue details
-    2. If review_status is PENDING/None: Generate action-oriented acknowledgment
-    3. If review_status is APPROVED: Use template from replies.json
-    4. If review_status is REJECTED: Generate subtle rejection with email mention
+    Maintains conditional flow:
+    - REPLY scenario: Check phase (unknown/pending/approved/rejected)
+    - Non-REPLY scenarios: Generate appropriate clarification
     
-    For non-REPLY scenarios (need_identifier, etc.): Use LLM to generate response.
+    All responses leverage:
+    - Conversation history (last 5 exchanges)
+    - Templates as few-shot examples
+    - Customer service tone
     
     Args:
         state: Current graph state.
@@ -324,26 +576,25 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
     scenario = state.get("draft_scenario", DraftScenario.REPLY)
     issue_type = state.get("issue_type", "unknown")
     order_details = state.get("order_details")
-    candidate_orders = state.get("candidate_orders", [])
-    ticket_text = state.get("ticket_text", "")
     order_id = state.get("order_id")
-    email = state.get("email")
-    admin_feedback = state.get("admin_feedback")
     review_status = state.get("review_status")
-    suggested_action = state.get("suggested_action")
-    messages = state.get("messages", [])
     
-    # For REPLY scenario, handle based on review_status
+    # Load templates for few-shot examples
+    templates = load_templates()
+    
+    # Determine phase for REPLY scenario
+    phase = None
     if scenario == DraftScenario.REPLY:
         customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
         
-        # Phase 1: Check if issue_type is unknown - ask for issue details
+        # Phase 1: Unknown issue
         if issue_type is None or issue_type == "unknown":
-            draft = f"Hi {customer_name}, we found your order {order_id}. Could you please describe the issue you're experiencing so we can assist you better?"
+            phase = "unknown"
+            draft = generate_draft_with_llm(scenario, phase, state, templates)
             
             return {
                 "draft_reply": draft,
-                "draft_scenario": DraftScenario.NEED_IDENTIFIER,  # Reuse for "need more info"
+                "draft_scenario": DraftScenario.NEED_IDENTIFIER,
                 "evidence": f"Scenario: need_issue_details, Order ID: {order_id}",
                 "recommendation": "Awaiting issue details from customer",
                 "messages": [AIMessage(content=draft)],
@@ -351,47 +602,28 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
                 "sender": "draft_reply"
             }
         
-        # Phase 2: PENDING - Action-oriented acknowledgment message
-        if review_status == ReviewStatus.PENDING or review_status is None:
-            # Define action-oriented messages per issue type
-            issue_actions = {
-                "refund_request": ("refund request", "Processing refund..."),
-                "wrong_item": ("wrong item issue", "Creating replacement ticket..."),
-                "missing_item": ("missing item", "Opening investigation..."),
-                "late_delivery": ("delivery delay", "Checking shipment status..."),
-                "damaged_item": ("damaged item report", "Arranging replacement..."),
-                "duplicate_charge": ("duplicate charge", "Verifying transaction..."),
-                "defective_product": ("defective product", "Verifying warranty..."),
-            }
+        # Phase 2: PENDING
+        elif review_status == ReviewStatus.PENDING or review_status is None:
+            phase = "pending"
+            draft = generate_draft_with_llm(scenario, phase, state, templates)
             
-            label, action = issue_actions.get(issue_type, ("issue", "Reviewing your case..."))
-            draft = f"Hi {customer_name}, we detected a {label} for {order_id}. {action}"
-            
-            # Create evidence and recommendation
             evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}"
             if order_details:
                 evidence += f", Status: {order_details.get('status', 'N/A')}"
-            recommendation = f"Awaiting admin approval for {issue_type} resolution"
             
             return {
                 "draft_reply": draft,
                 "evidence": evidence,
-                "recommendation": recommendation,
+                "recommendation": f"Awaiting admin approval for {issue_type} resolution",
                 "messages": [AIMessage(content=draft)],
                 "review_status": ReviewStatus.PENDING,
                 "sender": "draft_reply"
             }
         
-        # Phase 3: APPROVED - Use template from replies.json (no LLM)
+        # Phase 3: APPROVED
         elif review_status == ReviewStatus.APPROVED:
-            # Use template from replies.json directly
-            templates = load_templates()
-            template = next(
-                (t["template"] for t in templates if t["issue_type"] == issue_type),
-                "Hi {{customer_name}}, your request for order {{order_id}} has been approved. We will process it shortly."
-            )
-            
-            draft = template.replace("{{customer_name}}", customer_name).replace("{{order_id}}", order_id or "N/A")
+            phase = "approved"
+            draft = generate_draft_with_llm(scenario, phase, state, templates)
             
             evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: APPROVED"
             recommendation = f"Approved {issue_type} resolution for order {order_id}"
@@ -405,9 +637,10 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
                 "sender": "draft_reply"
             }
         
-        # Phase 4: REJECTED - Subtle rejection with email mention
+        # Phase 4: REJECTED
         else:  # review_status == ReviewStatus.REJECTED
-            draft = f"Hi {customer_name}, thank you for reaching out regarding order {order_id}. After reviewing your request, we are unable to proceed at this time. Please check your email for more details on next steps."
+            phase = "rejected"
+            draft = generate_draft_with_llm(scenario, phase, state, templates)
             
             evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: REJECTED"
             recommendation = f"Rejected {issue_type} request for order {order_id}"
@@ -421,82 +654,9 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
                 "sender": "draft_reply"
             }
     
-    # For non-REPLY scenarios, use LLM as before
-    templates = load_templates()
+    # Non-REPLY scenarios: use LLM with scenario-specific prompts
+    draft = generate_draft_with_llm(scenario, "non_reply", state, templates)
     
-    # Build templates string for context
-    templates_str = "\n".join([
-        f"- {t['issue_type']}: {t['template']}" for t in templates
-    ])
-    
-    # Build candidate orders string if applicable
-    candidates_str = ""
-    if candidate_orders:
-        candidates_str = "\n".join([
-            f"- {o['order_id']}: {o['items'][0]['name'] if o.get('items') else 'N/A'} ({o.get('status', 'N/A')})"
-            for o in candidate_orders
-        ])
-    
-    # Build conversation history from last 5 messages (excluding current)
-    conversation_history = ""
-    if len(messages) > 1:
-        recent_messages = messages[-6:-1] if len(messages) > 5 else messages[:-1]
-        history_parts = []
-        for msg in recent_messages:
-            if isinstance(msg, HumanMessage):
-                role = "Customer"
-            elif isinstance(msg, AIMessage):
-                role = "Agent"
-            else:
-                role = "System"
-            content = msg.content if hasattr(msg, "content") else str(msg)
-            if not content.startswith("[FINAL]"):
-                history_parts.append(f"{role}: {content}")
-        if history_parts:
-            conversation_history = "\n".join(history_parts)
-    
-    history_section = f"\nCONVERSATION HISTORY (for context):\n{conversation_history}\n" if conversation_history else ""
-    
-    system_prompt = f"""You are a customer support assistant for an e-commerce company. Generate a helpful, professional response based on the scenario and conversation context.
-
-SCENARIO: {scenario.value if scenario else 'reply'}
-{history_section}
-Available templates (use as structure/tone guidance):
-{templates_str}
-
-Respond appropriately based on scenario:
-- need_identifier: Politely ask the customer to provide their order ID (format: ORD followed by numbers) or the email address associated with their order
-- order_not_found: Explain that we couldn't find an order with that ID, ask them to verify and provide the correct order ID or email
-- no_orders_found: Explain that we couldn't find any orders for that email address, ask them to verify and provide a different email or order ID
-- confirm_order: List the candidate orders and ask the customer to specify which order they're inquiring about
-
-Keep responses concise, friendly, and professional. Do not include internal notes or scenario labels in the response."""
-
-    # Build user message with context
-    context_parts = [f"Customer message: {ticket_text}"]
-    context_parts.append(f"Issue type: {issue_type}")
-    
-    if order_id:
-        context_parts.append(f"Order ID: {order_id}")
-    if email:
-        context_parts.append(f"Email: {email}")
-    if order_details:
-        customer_name = order_details.get("customer_name", "Customer")
-        context_parts.append(f"Customer name: {customer_name}")
-        context_parts.append(f"Order status: {order_details.get('status', 'N/A')}")
-    if candidates_str:
-        context_parts.append(f"Candidate orders:\n{candidates_str}")
-    
-    user_message = "\n".join(context_parts)
-    
-    response = get_llm().invoke([
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_message)
-    ])
-    
-    draft = response.content
-    
-    # Create evidence summary
     evidence = f"Scenario: {scenario.value if scenario else 'unknown'}, Issue Type: {issue_type}"
     if order_id:
         evidence += f", Order ID: {order_id}"
