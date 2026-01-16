@@ -17,18 +17,7 @@ A token-optimized LangGraph orchestrator for customer support ticket triage with
 
 The system uses a stateful graph with 4 smart routing paths based on conversation context:
 
-```mermaid
-flowchart TD
-    START([START]) --> ingest[ingest]
-    ingest --> classify[classify_issue]
-    classify --> resolve[resolve_order]
-    resolve --> prepare[prepare_action]
-    prepare --> draft[draft_reply]
-    draft --> admin[admin_review]
-    admin --> draft
-    draft --> finalize[finalize]
-    finalize --> END([END])
-```
+![Ticket Triage Graph Workflow](graph_diagram.png)
 
 ### Nodes (7 total)
 
@@ -269,3 +258,18 @@ LANGCHAIN_PROJECT=ticket-triage-system
 
 **Classification Rules** (`mock_data/issues.json`):
 Editable JSON file to customize keyword matching logic without code changes.
+
+## How I used AI for the project
+
+First I created an initial draft about the project with the required flow and features that I want to build for the project. I referred the following LangChain & LangGraph blogs to decide on the agent architecture that I want to build,
+
+- https://docs.langchain.com/oss/python/langchain/multi-agent
+- https://docs.langchain.com/oss/python/langchain/multi-agent/handoffs-customer-support
+
+After I'm ready with my requirements I started building the project on Cursor.
+Models used:
+
+- **Brainstorming and Planning**: Claude Opus, Gemini 3 Pro
+- **Coding**: Claude Opus, Sonnet and Haiku (Depending on complexity)
+
+I used Antigravity with Claude Sonnet to build the frontend.

@@ -32,17 +32,16 @@ dependencies = [
     "fastapi==0.115.0",
     "uvicorn==0.30.6",
     "pydantic==2.9.2",
-    
     # LangGraph & LangChain
     "langgraph==1.0.5",
     "langchain>=0.3.0",
     "langchain-openai>=0.2.0",
-    
     # Observability
     "langsmith>=0.1.0",
-    
     # Environment
     "python-dotenv>=1.0.0",
+    "nest-asyncio>=1.6.0",
+    "pyppeteer>=2.0.0",
 ]
 
 [project.optional-dependencies]

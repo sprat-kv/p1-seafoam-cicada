@@ -397,8 +397,8 @@ Generate a response that asks for issue details naturally."""
         elif phase == "pending":
             # Get action-oriented context
             action_map = {
-                "refund_request": "processing your refund",
-                "wrong_item": "arranging a replacement",
+                "refund_request": "processing your refund after verifying the details",
+                "wrong_item": "arranging a replacement after verifying the details",
                 "missing_item": "investigating the missing item",
                 "late_delivery": "checking shipment status",
                 "damaged_item": "preparing a replacement",
