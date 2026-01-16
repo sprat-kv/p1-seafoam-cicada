@@ -4,7 +4,7 @@ A token-optimized LangGraph orchestrator for customer support ticket triage with
 
 ## Loom Recording
 
-- **Video walkthrough**: <https://www.loom.com/share/ffb0e39a66eb47d9881535cbe3d0f5f1>
+- [Video walkthrough](https://www.loom.com/share/ffb0e39a66eb47d9881535cbe3d0f5f1)
 
 ## Features
 
