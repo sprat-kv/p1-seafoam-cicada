@@ -4,13 +4,12 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Card, CardHeader, CardContent } from "@/components/ui/card";
+import { Card, CardHeader } from "@/components/ui/card";
 import { MessageBubble } from "./message-bubble";
 import { TypingIndicator } from "./typing-indicator";
 import { triageInvoke } from "@/lib/api";
 import { Message } from "@/lib/types";
 import { Send, CheckCircle2, Minus, X } from "lucide-react";
-import { cn } from "@/lib/utils";
 
 interface TriageChatProps {
     isOpen: boolean;
@@ -103,9 +102,6 @@ export function TriageChat({ isOpen, onMinimize, onClose, onSessionStart }: Tria
 
     const handleClose = () => {
         setConversationEnded(true);
-        // Remove thread persistence when conversation is manually ended
-        localStorage.removeItem(THREAD_ID_KEY);
-        setThreadId(null);
     };
 
     const handleEndSession = () => {
@@ -121,7 +117,6 @@ export function TriageChat({ isOpen, onMinimize, onClose, onSessionStart }: Tria
         setThreadId(null);
         localStorage.removeItem(THREAD_ID_KEY);
         setConversationEnded(false);
-        // Don't close, just reset
     };
 
     const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -134,8 +129,9 @@ export function TriageChat({ isOpen, onMinimize, onClose, onSessionStart }: Tria
     if (!isOpen) return null;
 
     return (
-        <Card className="fixed bottom-24 right-6 w-[400px] max-w-[calc(100vw-2rem)] h-[600px] max-h-[calc(100vh-8rem)] shadow-2xl flex flex-col z-40 border-primary/20 animate-in slide-in-from-bottom-10 fade-in-0 sm:right-6">
-            <CardHeader className="px-4 py-3 border-b bg-primary/5 rounded-t-xl shrink-0">
+        <Card className="fixed bottom-24 right-6 w-[400px] max-w-[calc(100vw-48px)] h-[600px] max-h-[calc(100vh-200px)] shadow-2xl flex flex-col z-40 border-primary/20 animate-in slide-in-from-bottom-10 fade-in-0">
+            {/* Header */}
+            <CardHeader className="px-4 py-3 border-b bg-primary/5 shrink-0">
                 <div className="flex items-center justify-between">
                     <h3 className="font-semibold text-sm flex items-center gap-2">
                         <span className="relative flex h-2.5 w-2.5">
@@ -167,76 +163,78 @@ export function TriageChat({ isOpen, onMinimize, onClose, onSessionStart }: Tria
                 </div>
             </CardHeader>
 
-            <CardContent className="flex-1 overflow-hidden p-0 flex flex-col bg-background/50 backdrop-blur-sm">
-                {conversationEnded ? (
-                    <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-4 animate-in fade-in-50 zoom-in-95">
-                        <div className="bg-green-100 dark:bg-green-900/30 p-4 rounded-full mb-2">
-                            <CheckCircle2 className="h-10 w-10 text-green-600 dark:text-green-500" />
-                        </div>
-                        <h3 className="text-lg font-semibold text-center">Conversation Ended</h3>
-                        <p className="text-sm text-muted-foreground text-center max-w-[250px]">
-                            Thank you for contacting support. Your ticket has been submitted for review.
-                        </p>
-                        <Button onClick={handleNewConversation} className="mt-4 w-full">
-                            Start New Conversation
-                        </Button>
+            {/* Conversation Ended State */}
+            {conversationEnded ? (
+                <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-4 animate-in fade-in-50 zoom-in-95">
+                    <div className="bg-green-100 dark:bg-green-900/30 p-4 rounded-full mb-2">
+                        <CheckCircle2 className="h-10 w-10 text-green-600 dark:text-green-500" />
                     </div>
-                ) : (
-                    <>
-                        <ScrollArea className="flex-1 px-4" ref={scrollAreaRef}>
+                    <h3 className="text-lg font-semibold text-center">Conversation Ended</h3>
+                    <p className="text-sm text-muted-foreground text-center max-w-[250px]">
+                        Thank you for contacting support. Your ticket has been submitted for review.
+                    </p>
+                    <Button onClick={handleNewConversation} className="mt-4 w-full">
+                        Start New Conversation
+                    </Button>
+                </div>
+            ) : (
+                <>
+                    {/* Messages Area */}
+                    <ScrollArea className="flex-1 min-h-0" ref={scrollAreaRef}>
+                        <div className="px-4 py-4">
                             {messages.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground py-8 px-4 opacity-70">
+                                <div className="flex flex-col items-center justify-center h-[400px] text-center text-muted-foreground opacity-70">
                                     <p className="text-sm">Hi! I'm here to help with your order issues.</p>
                                     <p className="text-sm mt-1">How can I assist you today?</p>
                                 </div>
                             ) : (
-                                <div className="py-4 space-y-4">
+                                <div className="space-y-4">
                                     {messages.map((message, index) => (
                                         <MessageBubble key={index} message={message} />
                                     ))}
                                     {isLoading && (
-                                        <div className="flex gap-2 mb-2 items-center text-muted-foreground text-xs pl-1">
-                                            <span className="h-6 w-6 flex items-center justify-center rounded-full bg-muted border">🤖</span>
+                                        <div className="flex gap-2 items-center text-muted-foreground text-xs">
+                                            <span className="h-6 w-6 flex items-center justify-center rounded-full bg-muted border text-sm">🤖</span>
                                             <TypingIndicator />
                                         </div>
                                     )}
                                 </div>
                             )}
-                        </ScrollArea>
-
-                        <div className="p-4 border-t bg-background shrink-0">
-                            <div className="flex gap-2">
-                                <Input
-                                    value={input}
-                                    onChange={(e) => setInput(e.target.value)}
-                                    onKeyPress={handleKeyPress}
-                                    placeholder="Type your message..."
-                                    disabled={isLoading}
-                                    className="flex-1"
-                                    autoFocus
-                                />
-                                <Button
-                                    onClick={handleSendMessage}
-                                    disabled={!input.trim() || isLoading}
-                                    size="icon"
-                                >
-                                    <Send className="h-4 w-4" />
-                                </Button>
-                            </div>
-                            <div className="flex justify-center mt-2">
-                                <Button
-                                    onClick={handleClose}
-                                    variant="ghost"
-                                    size="sm"
-                                    className="text-[10px] h-6 text-muted-foreground hover:text-destructive"
-                                >
-                                    End Session (Archive)
-                                </Button>
-                            </div>
                         </div>
-                    </>
-                )}
-            </CardContent>
+                    </ScrollArea>
+
+                    {/* Input Area - Always Visible at Bottom */}
+                    <div className="border-t bg-background p-4 shrink-0">
+                        <div className="flex gap-2 mb-2">
+                            <Input
+                                value={input}
+                                onChange={(e) => setInput(e.target.value)}
+                                onKeyPress={handleKeyPress}
+                                placeholder="Type your message..."
+                                disabled={isLoading}
+                                className="flex-1"
+                            />
+                            <Button
+                                onClick={handleSendMessage}
+                                disabled={!input.trim() || isLoading}
+                                size="icon"
+                            >
+                                <Send className="h-4 w-4" />
+                            </Button>
+                        </div>
+                        <div className="flex justify-center">
+                            <Button
+                                onClick={handleClose}
+                                variant="ghost"
+                                size="sm"
+                                className="text-xs h-6 text-muted-foreground hover:text-destructive"
+                            >
+                                End Conversation
+                            </Button>
+                        </div>
+                    </div>
+                </>
+            )}
         </Card>
     );
 }
