@@ -2,6 +2,10 @@
 
 A token-optimized LangGraph orchestrator for customer support ticket triage with Human-in-the-Loop (HITL) admin review and multi-turn conversation support.
 
+## Loom Recording
+
+- **Video walkthrough**: <https://www.loom.com/share/ffb0e39a66eb47d9881535cbe3d0f5f1>
+
 ## Features
 
 - **Multi-turn Conversations** - Maintains context across turns (thread-level persistence)
@@ -267,6 +271,7 @@ First I created an initial draft about the project with the required flow and fe
 - https://docs.langchain.com/oss/python/langchain/multi-agent/handoffs-customer-support
 
 After I'm ready with my requirements I started building the project on Cursor.
+
 Models used:
 
 - **Brainstorming and Planning**: Claude Opus, Gemini 3 Pro

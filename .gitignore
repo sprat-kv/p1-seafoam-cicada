@@ -4,57 +4,18 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
 # Virtual environments
-venv/
-env/
-ENV/
 .venv
 .env
-
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-.cursor/*
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.hypothesis/
+.cursor
 
 # uv
 .uv/
 uv.lock
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
 
 # LangSmith
 .langsmith/
