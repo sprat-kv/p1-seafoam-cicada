@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_core.messages.utils import trim_messages
+from langchain_core.messages.utils import trim_messages, count_tokens_approximately
 from langchain_openai import ChatOpenAI
 
 from app.graph.state import GraphState
@@ -339,6 +339,7 @@ def generate_draft_with_llm(
         recent_messages = trim_messages(
             messages[:-1],  # Exclude current message
             strategy="last",
+            token_counter=count_tokens_approximately,  # Required: token counting function
             max_tokens=2000,  # Reasonable limit for conversation context
             start_on="human",
             end_on=("human", "ai"),
