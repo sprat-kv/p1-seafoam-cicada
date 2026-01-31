@@ -4,7 +4,7 @@ A token-optimized LangGraph orchestrator for customer support ticket triage with
 
 ## Loom Recording
 
-- [Video walkthrough](https://www.loom.com/share/ffb0e39a66eb47d9881535cbe3d0f5f1)
+- [Video walkthrough](https://share.vidyard.com/watch/aqABYbeHiGkdAHqwPpDEXv)
 
 ## Features
 
@@ -19,7 +19,7 @@ A token-optimized LangGraph orchestrator for customer support ticket triage with
 
 ## Architecture
 
-The system uses a stateful graph with 4 smart routing paths based on conversation context:
+The system uses a stateful graph with 4 smart routing paths ba sed on conversation context:
 
 ![Ticket Triage Graph Workflow](graph_diagram.png)
 
