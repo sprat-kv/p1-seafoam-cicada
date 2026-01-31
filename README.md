@@ -19,7 +19,7 @@ A token-optimized LangGraph orchestrator for customer support ticket triage with
 
 ## Architecture
 
-The system uses a stateful graph with 4 smart routing paths ba sed on conversation context:
+The system uses a stateful graph with 4 smart routing paths based on conversation context:
 
 ![Ticket Triage Graph Workflow](graph_diagram.png)
 
