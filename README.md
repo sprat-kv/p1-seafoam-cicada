@@ -39,18 +39,27 @@ The system uses a stateful graph with 4 smart routing paths based on conversatio
 | `admin_review` | Pass-through checkpoint for HITL admin approval |
 | `finalize` | Mark response as approved and save final state |
 
-### RAG Integration (Position B)
+### RAG Integration
 
 RAG is invoked **after** `prepare_action` and **before** `draft_reply`:
 
 ```mermaid
 graph TD
-    resolveOrder[resolve_order] --> prepareAction[prepare_action]
+    startNode([START]) --> ingest[ingest]
+    ingest --> classifyIssue[classify_issue]
+    classifyIssue --> resolveOrder[resolve_order]
+    resolveOrder --> prepareAction[prepare_action]
     prepareAction --> routeRAG{"route_to_rag"}
-    routeRAG -->|REPLY scenario| kbOrchestrator[kb_orchestrator]
-    routeRAG -->|non-REPLY scenario| draftReply[draft_reply]
+    routeRAG -->|"REPLY scenario"| kbOrchestrator[kb_orchestrator]
+    routeRAG -->|"non-REPLY scenario"| draftReply[draft_reply]
     kbOrchestrator --> policyEvaluator[policy_evaluator]
     policyEvaluator --> draftReply
+    draftReply --> routeAfterDraft{"route_after_draft"}
+    routeAfterDraft -->|"pending review"| adminReview[admin_review]
+    adminReview --> draftReply
+    routeAfterDraft -->|"approved or rejected"| finalize[finalize]
+    routeAfterDraft -->|"non-REPLY end"| endNode([END])
+    finalize --> endNode
 ```
 
 Why this placement:
