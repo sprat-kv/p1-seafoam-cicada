@@ -93,12 +93,11 @@ def route_to_rag(state: GraphState) -> RouteAfterPrepareAction:
     """
     Decide whether to invoke the policy RAG subgraph.
 
-    We only run RAG when we have a normal REPLY scenario and a known issue_type.
+    Run RAG for all REPLY scenarios, including unknown issue type.
     """
     scenario = state.get("draft_scenario")
-    issue_type = state.get("issue_type")
 
-    if scenario == DraftScenario.REPLY and issue_type and issue_type != "unknown":
+    if scenario == DraftScenario.REPLY:
         return "kb_orchestrator"
     return "draft_reply"
 

@@ -57,7 +57,7 @@ def kb_orchestrator(state: GraphState) -> dict[str, Any]:
     """
     issue_type = state.get("issue_type")
     scenario = state.get("draft_scenario")
-    if scenario != DraftScenario.REPLY or issue_type not in KNOWN_ISSUE_TYPES:
+    if scenario != DraftScenario.REPLY:
         return {"policy_citations": [], "sender": "kb_orchestrator"}
 
     suggested_action = state.get("suggested_action", "")

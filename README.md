@@ -47,8 +47,8 @@ RAG is invoked **after** `prepare_action` and **before** `draft_reply`:
 graph TD
     resolveOrder[resolve_order] --> prepareAction[prepare_action]
     prepareAction --> routeRAG{"route_to_rag"}
-    routeRAG -->|known issue type| kbOrchestrator[kb_orchestrator]
-    routeRAG -->|unknown issue| draftReply[draft_reply]
+    routeRAG -->|REPLY scenario| kbOrchestrator[kb_orchestrator]
+    routeRAG -->|non-REPLY scenario| draftReply[draft_reply]
     kbOrchestrator --> policyEvaluator[policy_evaluator]
     policyEvaluator --> draftReply
 ```
@@ -57,6 +57,7 @@ Why this placement:
 - `prepare_action` creates a concrete proposed action first.
 - `kb_orchestrator` retrieves the most relevant policies using `issue_type`, `ticket_text`, and `suggested_action`.
 - `policy_evaluator` enriches admin-facing action text and emits structured `applied_policies`.
+- Unknown issue types are also policy-checked via semantic fallback retrieval.
 
 ## State Management
 
@@ -81,6 +82,10 @@ Conditional mapping:
 - `fraud_policy.md` is added when:
   - issue is `refund_request`, `wrong_item`, or `missing_item`, and
   - order amount is greater than 80 USD.
+
+Unknown issue handling:
+- If issue type is `unknown`, the retriever still performs semantic search across the full policy collection.
+- This ensures the agent can surface potentially relevant policies even when classification is uncertain.
 
 ## Human-in-the-Loop (HITL) Architecture
 

@@ -9,7 +9,7 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
-from app.rag.config import FRAUD_ELIGIBLE_ISSUES, FRAUD_THRESHOLD, POLICY_ISSUE_MAP, TOP_K
+from app.rag.config import FRAUD_ELIGIBLE_ISSUES, FRAUD_THRESHOLD, TOP_K
 from app.rag.indexer import get_collection
 
 
@@ -68,10 +68,6 @@ def query_policies(
     collection = get_collection()
     results: list[dict[str, Any]] = []
     include_fraud = _needs_fraud_policy(issue_type, order_details)
-    has_primary_mapping = any(issue_type in mapped for mapped in POLICY_ISSUE_MAP.values()) if issue_type else False
-
-    if issue_type and not has_primary_mapping and not include_fraud:
-        return []
 
     if issue_type:
         issue_where = {f"issue_{issue_type}": True}
