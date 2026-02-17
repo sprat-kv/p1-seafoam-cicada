@@ -42,6 +42,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "nest-asyncio>=1.6.0",
     "pyppeteer>=2.0.0",
+    "chromadb>=1.5.0",
+    "langgraph-checkpoint-postgres>=3.0.4",
+    "psycopg[binary]>=3.1.0",
 ]
 
 [project.optional-dependencies]

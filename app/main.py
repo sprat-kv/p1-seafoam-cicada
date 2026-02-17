@@ -1,6 +1,6 @@
+from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
 import json, os, re
 from uuid import uuid4
 from dotenv import load_dotenv
@@ -18,12 +18,29 @@ if os.getenv("LANGSMITH_API_KEY"):
 from app.graph import tools as graph_tools
 from app.graph.workflow import compile_graph
 from app.schema import (
-    TriageInput, TriageOutput, AdminReviewInput, ReviewAction, 
+    TriageInput, TriageOutput, AdminReviewInput,
     ReviewStatus, DraftScenario, PendingTicket, PendingTicketsResponse
 )
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-app = FastAPI(title="Ticket Triage API with LangGraph HITL")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and manage database-backed LangGraph checkpointer lifecycle."""
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError("DATABASE_URL is required for PostgreSQL checkpointer.")
+
+    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
+        await checkpointer.setup()
+        app.state.hitl_graph = compile_graph(
+            checkpointer=checkpointer,
+            interrupt_before=["admin_review"],
+        )
+        yield
+
+
+app = FastAPI(title="Ticket Triage API with LangGraph HITL", lifespan=lifespan)
 
 # -------------------------------------------------------------------
 # Pending Tickets Storage (In-Memory)
@@ -50,14 +67,6 @@ def remove_pending_ticket(thread_id: str):
     """Remove ticket from pending list after admin review."""
     pending_tickets.pop(thread_id, None)
 
-# Initialize checkpointer for HITL persistence
-checkpointer = MemorySaver()
-
-# Compile graph with checkpointer and interrupt before admin_review
-hitl_graph = compile_graph(
-    checkpointer=checkpointer,
-    interrupt_before=["admin_review"]
-)
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MOCK_DIR = os.path.join(ROOT, "mock_data")
 
@@ -109,7 +118,7 @@ def reply_draft(payload: dict):
     return {"reply_text": render_reply(payload.get("issue_type"), payload.get("order", {}))}
 
 @app.post("/triage/invoke", response_model=TriageOutput)
-def triage_invoke_langgraph(body: TriageInput):
+async def triage_invoke_langgraph(body: TriageInput):
     """
     Invoke the LangGraph ticket triage workflow with HITL support.
     
@@ -136,8 +145,10 @@ def triage_invoke_langgraph(body: TriageInput):
     config = {"configurable": {"thread_id": thread_id}}
     
     try:
+        hitl_graph = app.state.hitl_graph
+
         # Check if thread has existing state (follow-up message)
-        existing_state = hitl_graph.get_state(config)
+        existing_state = await hitl_graph.aget_state(config)
         
         # Check if state dict has content (values dict is not empty means state exists)
         if existing_state.values and existing_state.values.get("ticket_text"):
@@ -167,7 +178,7 @@ def triage_invoke_langgraph(body: TriageInput):
             }
         
         # Invoke the graph - it will run until interrupt or END
-        result = hitl_graph.invoke(input_state, config)
+        result = await hitl_graph.ainvoke(input_state, config)
         
         # Extract messages (convert to dict format for API response)
         messages = []
@@ -235,7 +246,7 @@ def list_pending_reviews():
 
 
 @app.post("/admin/review", response_model=TriageOutput)
-def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
+async def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
     """
     Resume the triage workflow after admin review.
     
@@ -252,8 +263,10 @@ def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
     config = {"configurable": {"thread_id": thread_id}}
     
     try:
+        hitl_graph = app.state.hitl_graph
+
         # Update state with admin decision before resuming
-        hitl_graph.update_state(
+        await hitl_graph.aupdate_state(
             config,
             {
                 "review_status": body.action.status,
@@ -262,7 +275,7 @@ def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
         )
         
         # Resume the graph with None input to continue from checkpoint
-        result = hitl_graph.invoke(None, config)
+        result = await hitl_graph.ainvoke(None, config)
         
         # Remove from pending after review
         if body.action.status in (ReviewStatus.APPROVED, ReviewStatus.REJECTED):
