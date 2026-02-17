@@ -234,7 +234,7 @@ Health check endpoint.
 - **Framework**: LangGraph v1.0.5
 - **LLM**: OpenAI GPT-4o-mini (via `langchain-openai>=0.2.0`)
 - **Embeddings**: OpenAI `text-embedding-3-small`
-- **Vector Store**: ChromaDB (in-memory, collection: `viridien_policies`)
+- **Vector Store**: ChromaDB (persistent local path, collection: `viridien_policies`)
 - **LangChain**: langchain>=0.3.0
 - **Persistence**: `langgraph.checkpoint.postgres.aio.AsyncPostgresSaver` (PostgreSQL-backed checkpointing)
 - **API**: FastAPI v0.115.0 with Pydantic v2.9.2
@@ -368,6 +368,9 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ticket_triage
 LANGCHAIN_TRACING_V2=true
 LANGSMITH_API_KEY=your-langsmith-api-key-here
 LANGCHAIN_PROJECT=ticket-triage-system
+
+# Optional: Local Chroma persistence directory
+CHROMA_PERSIST_DIR=.chroma
 ```
 
 **LangSmith Tracing**:

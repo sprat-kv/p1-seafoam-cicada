@@ -11,6 +11,7 @@ FRAUD_THRESHOLD = 80.0
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 POLICIES_DIR = os.path.join(ROOT, "policies")
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", os.path.join(ROOT, ".chroma"))
 
 # Primary policy mappings by file.
 POLICY_ISSUE_MAP: dict[str, list[str]] = {

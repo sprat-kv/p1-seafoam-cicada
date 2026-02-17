@@ -10,7 +10,13 @@ from typing import Any
 import chromadb
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 
-from app.rag.config import COLLECTION_NAME, EMBEDDING_MODEL, POLICIES_DIR, POLICY_ISSUE_MAP
+from app.rag.config import (
+    CHROMA_PERSIST_DIR,
+    COLLECTION_NAME,
+    EMBEDDING_MODEL,
+    POLICIES_DIR,
+    POLICY_ISSUE_MAP,
+)
 
 _client: chromadb.ClientAPI | None = None
 _collection: Any | None = None
@@ -32,7 +38,8 @@ def _build_issue_metadata(issue_types: list[str]) -> dict[str, Any]:
 def get_chroma_client() -> chromadb.ClientAPI:
     global _client
     if _client is None:
-        _client = chromadb.EphemeralClient()
+        os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
+        _client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
     return _client
 
 
