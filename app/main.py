@@ -17,6 +17,7 @@ if os.getenv("LANGSMITH_API_KEY"):
 # Import graph tools to load orders data
 from app.graph import tools as graph_tools
 from app.graph.workflow import compile_graph
+from app.rag.indexer import index_policies
 from app.schema import (
     TriageInput, TriageOutput, AdminReviewInput,
     ReviewStatus, DraftScenario, PendingTicket, PendingTicketsResponse
@@ -33,6 +34,12 @@ async def lifespan(app: FastAPI):
 
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
+        try:
+            indexed = index_policies()
+            print(f"Indexed {indexed} policy documents into ChromaDB collection.")
+        except Exception as exc:
+            # Keep service available even when KB setup fails; graph nodes handle empty KB safely.
+            print(f"Warning: policy indexing failed at startup: {exc}")
         app.state.hitl_graph = compile_graph(
             checkpointer=checkpointer,
             interrupt_before=["admin_review"],
@@ -58,6 +65,7 @@ def add_pending_ticket(thread_id: str, result: dict):
         "customer_name": order_details.get("customer_name"),
         "issue_type": result.get("issue_type"),
         "suggested_action": result.get("suggested_action"),
+        "applied_policies": result.get("applied_policies"),
         "draft_reply": result.get("draft_reply"),
         "created_at": datetime.now().isoformat()
     }
@@ -172,6 +180,9 @@ async def triage_invoke_langgraph(body: TriageInput):
                 "draft_scenario": None,
                 "route_path": None,
                 "suggested_action": None,
+                "policy_citations": None,
+                "policy_evaluation": None,
+                "applied_policies": None,
                 "review_status": None,
                 "admin_feedback": None,
                 "sender": None,
@@ -213,6 +224,8 @@ async def triage_invoke_langgraph(body: TriageInput):
             draft_scenario=result.get("draft_scenario"),
             draft_reply=draft_reply,
             suggested_action=result.get("suggested_action"),
+            policy_evaluation=result.get("policy_evaluation"),
+            applied_policies=result.get("applied_policies"),
             review_status=result.get("review_status"),
             evidence=result.get("evidence"),
             recommendation=result.get("recommendation"),
@@ -309,6 +322,8 @@ async def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
             draft_scenario=result.get("draft_scenario"),
             draft_reply=draft_reply,
             suggested_action=result.get("suggested_action"),
+            policy_evaluation=result.get("policy_evaluation"),
+            applied_policies=result.get("applied_policies"),
             review_status=result.get("review_status"),
             evidence=result.get("evidence"),
             recommendation=result.get("recommendation"),

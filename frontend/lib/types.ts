@@ -38,8 +38,16 @@ export interface PendingTicket {
   customer_name?: string | null;
   issue_type?: string | null;
   suggested_action?: string | null;
+  applied_policies?: AppliedPolicy[] | null;
   draft_reply?: string | null;
   created_at?: string | null;
+}
+
+export interface AppliedPolicy {
+  source: string;
+  title: string;
+  cited_rule: string;
+  compliance: "compliant" | "non_compliant" | "requires_review";
 }
 
 export interface PendingTicketsResponse {

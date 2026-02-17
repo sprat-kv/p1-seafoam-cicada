@@ -14,6 +14,7 @@ import { Separator } from "@/components/ui/separator";
 import { PendingTicket } from "@/lib/types";
 import { submitReview } from "@/lib/api";
 import { Check, X, Loader2, Package, User, MessageSquare } from "lucide-react";
+import { PolicyInformation } from "@/components/policy-information";
 
 interface TicketDetailProps {
     ticket: PendingTicket | null;
@@ -79,12 +80,12 @@ export function TicketDetail({
 
     return (
         <Dialog open={isOpen} onOpenChange={onClose}>
-            <DialogContent className="sm:max-w-[600px]">
+            <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col">
                 <DialogHeader>
                     <DialogTitle className="text-2xl">Ticket Details</DialogTitle>
                 </DialogHeader>
 
-                <div className="space-y-4 py-4">
+                <div className="flex-1 min-h-0 overflow-y-auto space-y-4 py-4 pr-2">
                     {/* Order Information */}
                     <div className="space-y-2">
                         <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
@@ -133,9 +134,19 @@ export function TicketDetail({
                                     Suggested Action
                                 </h3>
                                 <div className="p-4 bg-muted rounded-lg">
-                                    <p className="text-sm">{ticket.suggested_action}</p>
+                                    <p className="text-sm whitespace-pre-wrap">
+                                        {ticket.suggested_action}
+                                    </p>
                                 </div>
                             </div>
+                        </>
+                    )}
+
+                    {/* Policy Information */}
+                    {ticket.applied_policies && ticket.applied_policies.length > 0 && (
+                        <>
+                            <Separator />
+                            <PolicyInformation policies={ticket.applied_policies} />
                         </>
                     )}
 
@@ -172,7 +183,7 @@ export function TicketDetail({
                     )}
                 </div>
 
-                <DialogFooter className="gap-2">
+                <DialogFooter className="gap-2 pt-3 border-t">
                     <Button
                         variant="outline"
                         onClick={onClose}

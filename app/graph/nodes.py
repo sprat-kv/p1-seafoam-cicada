@@ -22,6 +22,30 @@ from app.graph.tools import fetch_order, search_orders
 _llm = None
 
 
+def _coerce_draft_scenario(value: Any) -> DraftScenario:
+    """Normalize stored scenario values to DraftScenario enum."""
+    if isinstance(value, DraftScenario):
+        return value
+    if isinstance(value, str):
+        try:
+            return DraftScenario(value)
+        except ValueError:
+            return DraftScenario.REPLY
+    return DraftScenario.REPLY
+
+
+def _coerce_review_status(value: Any) -> ReviewStatus | None:
+    """Normalize stored review status values to ReviewStatus enum."""
+    if isinstance(value, ReviewStatus):
+        return value
+    if isinstance(value, str):
+        try:
+            return ReviewStatus(value)
+        except ValueError:
+            return None
+    return None
+
+
 def get_llm():
     """Get or create the LLM instance (lazy initialization)."""
     global _llm
@@ -574,11 +598,11 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
     Returns:
         Partial state update with draft_reply and review_status.
     """
-    scenario = state.get("draft_scenario", DraftScenario.REPLY)
+    scenario = _coerce_draft_scenario(state.get("draft_scenario", DraftScenario.REPLY))
     issue_type = state.get("issue_type", "unknown")
     order_details = state.get("order_details")
     order_id = state.get("order_id")
-    review_status = state.get("review_status")
+    review_status = _coerce_review_status(state.get("review_status"))
     
     # Load templates for few-shot examples
     templates = load_templates()

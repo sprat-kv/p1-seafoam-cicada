@@ -13,6 +13,8 @@ A token-optimized LangGraph orchestrator for customer support ticket triage with
 - **Unified Order Resolution** - Single node handles ID lookup, email search, and user selection
 - **Smart Classification** - Priority-based keyword matching with tie-breaker logic
 - **Human-in-the-Loop** - Admin review checkpoint for critical responses
+- **Agentic RAG Policy Checks** - Action-aware policy retrieval and compliance evaluation before final drafting
+- **Policy Citations for UI** - Structured `applied_policies` payload to display exactly which policies were used
 - **Contextual Responses** - LLM-generated replies with conversation memory for natural interactions
 - **Token Optimized** - 70-80% token reduction vs traditional approaches
 - **Modern Python** - Supports both `uv` and `pip`
@@ -23,7 +25,7 @@ The system uses a stateful graph with 4 smart routing paths based on conversatio
 
 ![Ticket Triage Graph Workflow](graph_diagram.png)
 
-### Nodes (7 total)
+### Nodes (9 total)
 
 | Node | Purpose |
 |------|---------|
@@ -31,9 +33,30 @@ The system uses a stateful graph with 4 smart routing paths based on conversatio
 | `classify_issue` | Priority-based keyword classification (skipped if issue already known) |
 | `resolve_order` | Unified order resolution (fetch by ID, search by email, or ask for identifier) |
 | `prepare_action` | Prepares the suggested action and sets review status to PENDING |
+| `kb_orchestrator` | Agentic retrieval planner: selects policy retrieval strategy by issue/action context |
+| `policy_evaluator` | Validates suggested action against retrieved policies and produces citations |
 | `draft_reply` | Unified draft node generating contextual responses using LLM for all scenarios |
 | `admin_review` | Pass-through checkpoint for HITL admin approval |
 | `finalize` | Mark response as approved and save final state |
+
+### RAG Integration (Position B)
+
+RAG is invoked **after** `prepare_action` and **before** `draft_reply`:
+
+```mermaid
+graph TD
+    resolveOrder[resolve_order] --> prepareAction[prepare_action]
+    prepareAction --> routeRAG{"route_to_rag"}
+    routeRAG -->|known issue type| kbOrchestrator[kb_orchestrator]
+    routeRAG -->|unknown issue| draftReply[draft_reply]
+    kbOrchestrator --> policyEvaluator[policy_evaluator]
+    policyEvaluator --> draftReply
+```
+
+Why this placement:
+- `prepare_action` creates a concrete proposed action first.
+- `kb_orchestrator` retrieves the most relevant policies using `issue_type`, `ticket_text`, and `suggested_action`.
+- `policy_evaluator` enriches admin-facing action text and emits structured `applied_policies`.
 
 ## State Management
 
@@ -43,14 +66,28 @@ The graph maintains a TypedDict state with the following fields:
 - **Customer**: `order_id`, `email`, `order_details`, `candidate_orders`
 - **Triage**: `issue_type`, `evidence`, `recommendation`
 - **Workflow**: `draft_reply`, `draft_scenario`, `route_path`, `sender`
+- **Policy RAG**: `policy_citations` (internal), `policy_evaluation`, `applied_policies` (frontend-friendly)
 - **Admin Review**: `review_status` (PENDING/APPROVED/REJECTED), `admin_feedback`, `suggested_action`
+
+## Policy Mapping and Fraud Escalation
+
+Primary mappings:
+- `chargeback_policy.md` -> `duplicate_charge`
+- `delivery_policy.md` -> `late_delivery`
+- `refund_policy.md` -> `refund_request`
+- `warranty_policy.md` -> `defective_product`, `damaged_item`
+
+Conditional mapping:
+- `fraud_policy.md` is added when:
+  - issue is `refund_request`, `wrong_item`, or `missing_item`, and
+  - order amount is greater than 80 USD.
 
 ## Human-in-the-Loop (HITL) Architecture
 
 This system implements a robust HITL pattern using LangGraph's checkpointing capabilities:
 
 1. **Interrupt Mechanism**: The graph is compiled with `interrupt_before=["admin_review"]`. When the workflow reaches this node, it pauses execution and saves the state to the checkpointer.
-2. **Persistence**: We use `MemorySaver` (in-memory checkpointer) to persist state between turns. In production, this can be swapped for a database-backed checkpointer (Postgres, Redis).
+2. **Persistence**: We use `AsyncPostgresSaver` (PostgreSQL-backed checkpointer) to persist graph state between turns and across server restarts.
 3. **Two-Stage Response**:
    - **Stage 1 (Pending)**: System generates a contextual acknowledgment for the user and a `suggested_action` for the admin.
    - **Stage 2 (Final)**: After admin approval, the system generates the final resolution message with conversation context.
@@ -167,11 +204,19 @@ curl -X POST "http://localhost:8000/triage/invoke" \
   -d '{"ticket_text": "Refund for ORD1001", "thread_id": "optional-uuid"}'
 ```
 
+Response includes RAG fields:
+- `policy_evaluation`: policy-grounded compliance summary.
+- `applied_policies`: list of exact policies/rules used for the decision.
+
 ### GET `/admin/review`
 List all tickets waiting for admin approval.
 ```bash
 curl http://localhost:8000/admin/review
 ```
+
+Each pending ticket now includes:
+- `suggested_action` (enriched with policy context)
+- `applied_policies` (for direct frontend rendering)
 
 ### POST `/admin/review`
 Submit admin decision (APPROVED/REJECTED).
@@ -188,8 +233,10 @@ Health check endpoint.
 
 - **Framework**: LangGraph v1.0.5
 - **LLM**: OpenAI GPT-4o-mini (via `langchain-openai>=0.2.0`)
+- **Embeddings**: OpenAI `text-embedding-3-small`
+- **Vector Store**: ChromaDB (in-memory, collection: `viridien_policies`)
 - **LangChain**: langchain>=0.3.0
-- **Persistence**: `langgraph.checkpoint.memory.MemorySaver` (supports database-backed checkpointer)
+- **Persistence**: `langgraph.checkpoint.postgres.aio.AsyncPostgresSaver` (PostgreSQL-backed checkpointing)
 - **API**: FastAPI v0.115.0 with Pydantic v2.9.2
 - **Server**: Uvicorn v0.30.6
 - **Tools**: Custom tool nodes for order fetching (fetch_order, search_orders)
@@ -212,6 +259,8 @@ pip install uv
 uv sync
 cp .env.example .env
 # Add OPENAI_API_KEY to .env
+# DATABASE_URL defaults to local Docker Postgres in .env.example
+docker compose up -d
 uv run uvicorn app.main:app --reload
 ```
 
@@ -224,19 +273,84 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
+## Knowledge Base Indexing CLI
+
+Use the reusable CLI to index or update policy docs in Chroma:
+
+```bash
+python kb_index.py index
+python kb_index.py list
+python kb_index.py query --text "refund for duplicate charge" --issue-type duplicate_charge
+python kb_index.py add --file policies/refund_policy.md
+```
+
+## Quick Interactive Demo (API Chat)
+
+An interactive terminal chat client is included:
+
+```bash
+python demo_rag_chat.py --base-url http://localhost:8000
+```
+
+Options:
+- `--auto-approve`: auto-submit admin approval whenever review status is pending.
+- Commands inside chat:
+  - `/pending` -> show current pending admin tickets
+  - `/quit` or `/exit` -> stop demo
+
+This demo calls:
+- `POST /triage/invoke`
+- `GET /admin/review`
+- `POST /admin/review`
+
+and prints RAG output fields (`policy_evaluation`, `applied_policies`) for quick validation.
+
 Visit: http://localhost:8000/docs
+
+### Local PostgreSQL with Docker
+
+This project uses Docker Compose for local Postgres. Current image:
+- `postgres:14.21-trixie`
+
+Start database:
+```bash
+docker compose up -d
+docker compose ps
+```
+
+Stop database:
+```bash
+docker compose stop
+```
+
+Remove container (keep data volume):
+```bash
+docker compose down
+```
+
+Remove container + volume data:
+```bash
+docker compose down -v
+```
 
 ## Project Structure
 
 ```
 ├── app/
 │   ├── graph/
-│   │   ├── nodes.py       # Node implementations (7 nodes)
+│   │   ├── nodes.py       # Core node implementations
 │   │   ├── state.py       # GraphState definition
 │   │   ├── tools.py       # Order tools
 │   │   └── workflow.py    # Graph wiring & routing logic
+│   ├── rag/
+│   │   ├── config.py      # RAG config and policy mappings
+│   │   ├── indexer.py     # Chroma indexing utilities
+│   │   ├── retriever.py   # Retrieval and reranking
+│   │   └── rag_nodes.py   # kb_orchestrator + policy_evaluator
 │   ├── main.py            # FastAPI app & endpoints
 │   └── schema.py          # Pydantic models & Enums
+├── kb_index.py            # Policy KB indexing CLI
+├── demo_rag_chat.py       # Interactive API demo chat client
 ├── mock_data/             # JSON data sources
 ├── interactions/          # Demo conversation logs
 └── requirements.txt       # Dependencies
@@ -248,6 +362,7 @@ Visit: http://localhost:8000/docs
 ```env
 # Required
 OPENAI_API_KEY=your-api-key-here
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/ticket_triage
 
 # Optional: LangSmith Tracing
 LANGCHAIN_TRACING_V2=true

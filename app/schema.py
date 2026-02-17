@@ -73,6 +73,8 @@ class TriageOutput(BaseModel):
     draft_scenario: Optional[DraftScenario] = None
     draft_reply: Optional[str] = None
     suggested_action: Optional[str] = Field(default=None, description="Template action awaiting admin approval")
+    policy_evaluation: Optional[str] = Field(default=None, description="Policy compliance summary for suggested action")
+    applied_policies: Optional[list[dict]] = Field(default=None, description="Policies used with cited rules for UI display")
     review_status: Optional[ReviewStatus] = None
     evidence: Optional[str] = None
     recommendation: Optional[str] = None
@@ -95,6 +97,7 @@ class PendingTicket(BaseModel):
     customer_name: Optional[str] = None
     issue_type: Optional[str] = None
     suggested_action: Optional[str] = None
+    applied_policies: Optional[list[dict]] = None
     draft_reply: Optional[str] = None
     created_at: Optional[str] = None
 

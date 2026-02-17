@@ -28,6 +28,9 @@ class GraphState(TypedDict):
         draft_scenario: The scenario type for the unified draft node.
         route_path: Routing decision from ingest for multi-turn support.
         suggested_action: Template-based action for admin to review.
+        policy_citations: Retrieved policy snippets from RAG retrieval.
+        policy_evaluation: Policy compliance summary derived from citations.
+        applied_policies: Structured policy list for admin/frontend display.
         review_status: Current status of Admin review (PENDING, APPROVED, REJECTED).
         admin_feedback: Feedback from Admin (optional).
         sender: The last node that modified the state.
@@ -45,6 +48,9 @@ class GraphState(TypedDict):
     draft_scenario: Optional[DraftScenario]
     route_path: Optional[RoutePath]
     suggested_action: Optional[str]
+    policy_citations: Optional[list[dict]]
+    policy_evaluation: Optional[str]
+    applied_policies: Optional[list[dict]]
     review_status: Optional[ReviewStatus]
     admin_feedback: Optional[str]
     sender: Optional[str]
