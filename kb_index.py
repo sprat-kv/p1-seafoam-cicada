@@ -8,8 +8,13 @@ import argparse
 import json
 import os
 
+from dotenv import load_dotenv
+
 from app.rag import index_policies, list_indexed_policies, query_policies, upsert_policy_document
 from app.rag.config import POLICIES_DIR
+
+# Ensure CLI picks up OPENAI_API_KEY and other env vars from .env.
+load_dotenv()
 
 
 def cmd_index(args: argparse.Namespace) -> None:
