@@ -20,6 +20,7 @@ from app.graph.tools import fetch_order, search_orders
 
 # LLM instance - lazy initialized
 _llm = None
+_templates_cache: list[dict] | None = None
 
 
 def _coerce_draft_scenario(value: Any) -> DraftScenario:
@@ -61,8 +62,11 @@ MOCK_DIR = os.path.join(ROOT, "mock_data")
 
 def load_templates() -> list[dict]:
     """Load reply templates from mock data."""
-    with open(os.path.join(MOCK_DIR, "replies.json"), "r", encoding="utf-8") as f:
-        return json.load(f)
+    global _templates_cache
+    if _templates_cache is None:
+        with open(os.path.join(MOCK_DIR, "replies.json"), "r", encoding="utf-8") as f:
+            _templates_cache = json.load(f)
+    return _templates_cache
 
 
 def load_issues() -> list[dict]:
@@ -328,6 +332,143 @@ def prepare_action(state: GraphState) -> dict[str, Any]:
     }
 
 
+def _resolve_draft_phase(
+    scenario: DraftScenario,
+    issue_type: str | None,
+    review_status: ReviewStatus | None,
+) -> str:
+    """Resolve the draft generation phase without changing route semantics."""
+    if scenario != DraftScenario.REPLY:
+        return "non_reply"
+    if issue_type is None or issue_type == "unknown":
+        return "unknown"
+    if review_status == ReviewStatus.APPROVED:
+        return "approved"
+    if review_status == ReviewStatus.REJECTED:
+        return "rejected"
+    return "pending"
+
+
+def _build_evidence_and_recommendation(
+    scenario: DraftScenario,
+    phase: str,
+    issue_type: str | None,
+    order_id: str | None,
+    order_details: dict[str, Any] | None,
+) -> tuple[str, str]:
+    """Build consistent evidence/recommendation strings for draft branches."""
+    if phase == "unknown":
+        return (
+            f"Scenario: need_issue_details, Order ID: {order_id}",
+            "Awaiting issue details from customer",
+        )
+    if phase == "pending":
+        evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}"
+        if order_details:
+            evidence += f", Status: {order_details.get('status', 'N/A')}"
+        return evidence, f"Awaiting admin approval for {issue_type} resolution"
+    if phase == "approved":
+        return (
+            f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: APPROVED",
+            f"Approved {issue_type} resolution for order {order_id}",
+        )
+    if phase == "rejected":
+        return (
+            f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: REJECTED",
+            f"Rejected {issue_type} request for order {order_id}",
+        )
+    evidence = f"Scenario: {scenario.value if scenario else 'unknown'}, Issue Type: {issue_type}"
+    if order_id:
+        evidence += f", Order ID: {order_id}"
+    return evidence, f"Awaiting additional information ({scenario.value if scenario else 'unknown'})"
+
+
+def _build_reply_update(
+    draft: str,
+    evidence: str,
+    recommendation: str,
+    review_status: ReviewStatus | None,
+    draft_scenario: DraftScenario | None = None,
+) -> dict[str, Any]:
+    """Build a normalized state update payload for draft replies."""
+    update: dict[str, Any] = {
+        "draft_reply": draft,
+        "evidence": evidence,
+        "recommendation": recommendation,
+        "messages": [AIMessage(content=draft)],
+        "review_status": review_status,
+        "sender": "draft_reply",
+    }
+    if draft_scenario is not None:
+        update["draft_scenario"] = draft_scenario
+    return update
+
+
+def _fallback_reply(
+    scenario: DraftScenario,
+    phase: str,
+    state: GraphState,
+) -> str:
+    """Deterministic fallback when LLM generation fails."""
+    order_details = state.get("order_details")
+    customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
+    order_id = state.get("order_id") or "N/A"
+
+    if scenario == DraftScenario.REPLY:
+        if phase == "unknown":
+            return (
+                f"Hi {customer_name}, thanks for sharing your order details for {order_id}. "
+                "Could you describe the issue you're facing so I can help further?"
+            )
+        if phase == "approved":
+            return (
+                f"Hi {customer_name}, we've reviewed your request for order {order_id} "
+                "and are proceeding with the resolution."
+            )
+        if phase == "rejected":
+            return (
+                f"Hi {customer_name}, thank you for reaching out about order {order_id}. "
+                "After review, we're unable to proceed with this request right now. "
+                "Please check your email for more details."
+            )
+        return (
+            f"Hi {customer_name}, thanks for contacting us about order {order_id}. "
+            "We're reviewing your request and will update you shortly."
+        )
+
+    if scenario == DraftScenario.ORDER_NOT_FOUND:
+        return "I couldn't find that order ID. Please verify it or share the email used for the order."
+    if scenario == DraftScenario.NO_ORDERS_FOUND:
+        return "I couldn't find orders under that email. Please verify the email or share your order ID."
+    if scenario == DraftScenario.CONFIRM_ORDER:
+        return "I found multiple orders. Please share the exact order ID you're asking about."
+    return "Please share your order ID (ORDxxxx) or the email used at checkout so I can locate your order."
+
+
+def _generate_with_fallback(
+    system_prompt: str,
+    ticket_text: str,
+    scenario: DraftScenario,
+    phase: str,
+    state: GraphState,
+) -> str:
+    """Generate with LLM and fallback to deterministic text on failure."""
+    user_message = f"Current customer message: {ticket_text}"
+    try:
+        response = get_llm().invoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_message),
+            ]
+        )
+        content = response.content.strip() if hasattr(response, "content") else ""
+        if content:
+            return content
+    except Exception:
+        pass
+    return _fallback_reply(scenario=scenario, phase=phase, state=state)
+
+
 def generate_draft_with_llm(
     scenario: DraftScenario,
     phase: str,
@@ -567,16 +708,13 @@ Customer Message: {ticket_text}
 
 Generate an appropriate response for the {scenario.value} scenario."""
 
-    # Build user message with current context
-    user_message = f"Current customer message: {ticket_text}"
-    
-    # Invoke LLM with system prompt and user message
-    response = get_llm().invoke([
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_message)
-    ])
-    
-    return response.content.strip()
+    return _generate_with_fallback(
+        system_prompt=system_prompt,
+        ticket_text=ticket_text,
+        scenario=scenario,
+        phase=phase,
+        state=state,
+    )
 
 
 def draft_reply(state: GraphState) -> dict[str, Any]:
@@ -607,95 +745,56 @@ def draft_reply(state: GraphState) -> dict[str, Any]:
     # Load templates for few-shot examples
     templates = load_templates()
     
-    # Determine phase for REPLY scenario
-    phase = None
-    if scenario == DraftScenario.REPLY:
-        customer_name = order_details.get("customer_name", "Customer") if order_details else "Customer"
-        
-        # Phase 1: Unknown issue
-        if issue_type is None or issue_type == "unknown":
-            phase = "unknown"
-            draft = generate_draft_with_llm(scenario, phase, state, templates)
-            
-            return {
-                "draft_reply": draft,
-                "draft_scenario": DraftScenario.NEED_IDENTIFIER,
-                "evidence": f"Scenario: need_issue_details, Order ID: {order_id}",
-                "recommendation": "Awaiting issue details from customer",
-                "messages": [AIMessage(content=draft)],
-                "review_status": None,
-                "sender": "draft_reply"
-            }
-        
-        # Phase 2: PENDING
-        elif review_status == ReviewStatus.PENDING or review_status is None:
-            phase = "pending"
-            draft = generate_draft_with_llm(scenario, phase, state, templates)
-            
-            evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}"
-            if order_details:
-                evidence += f", Status: {order_details.get('status', 'N/A')}"
-            
-            return {
-                "draft_reply": draft,
-                "evidence": evidence,
-                "recommendation": f"Awaiting admin approval for {issue_type} resolution",
-                "messages": [AIMessage(content=draft)],
-                "review_status": ReviewStatus.PENDING,
-                "sender": "draft_reply"
-            }
-        
-        # Phase 3: APPROVED
-        elif review_status == ReviewStatus.APPROVED:
-            phase = "approved"
-            draft = generate_draft_with_llm(scenario, phase, state, templates)
-            
-            evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: APPROVED"
-            recommendation = f"Approved {issue_type} resolution for order {order_id}"
-            
-            return {
-                "draft_reply": draft,
-                "evidence": evidence,
-                "recommendation": recommendation,
-                "messages": [AIMessage(content=draft)],
-                "review_status": ReviewStatus.APPROVED,
-                "sender": "draft_reply"
-            }
-        
-        # Phase 4: REJECTED
-        else:  # review_status == ReviewStatus.REJECTED
-            phase = "rejected"
-            draft = generate_draft_with_llm(scenario, phase, state, templates)
-            
-            evidence = f"Scenario: {scenario.value}, Issue Type: {issue_type}, Order ID: {order_id}, Admin: REJECTED"
-            recommendation = f"Rejected {issue_type} request for order {order_id}"
-            
-            return {
-                "draft_reply": draft,
-                "evidence": evidence,
-                "recommendation": recommendation,
-                "messages": [AIMessage(content=draft)],
-                "review_status": ReviewStatus.REJECTED,
-                "sender": "draft_reply"
-            }
-    
-    # Non-REPLY scenarios: use LLM with scenario-specific prompts
-    draft = generate_draft_with_llm(scenario, "non_reply", state, templates)
-    
-    evidence = f"Scenario: {scenario.value if scenario else 'unknown'}, Issue Type: {issue_type}"
-    if order_id:
-        evidence += f", Order ID: {order_id}"
-    
-    recommendation = f"Awaiting additional information ({scenario.value if scenario else 'unknown'})"
-    
-    return {
-        "draft_reply": draft,
-        "evidence": evidence,
-        "recommendation": recommendation,
-        "messages": [AIMessage(content=draft)],
-        "review_status": None,
-        "sender": "draft_reply"
-    }
+    phase = _resolve_draft_phase(
+        scenario=scenario,
+        issue_type=issue_type,
+        review_status=review_status,
+    )
+    draft = generate_draft_with_llm(scenario, phase, state, templates)
+    evidence, recommendation = _build_evidence_and_recommendation(
+        scenario=scenario,
+        phase=phase,
+        issue_type=issue_type,
+        order_id=order_id,
+        order_details=order_details,
+    )
+
+    if phase == "unknown":
+        # Preserve existing behavior for unknown REPLY issues.
+        return _build_reply_update(
+            draft=draft,
+            draft_scenario=DraftScenario.NEED_IDENTIFIER,
+            evidence=evidence,
+            recommendation=recommendation,
+            review_status=None,
+        )
+    if phase == "pending":
+        return _build_reply_update(
+            draft=draft,
+            evidence=evidence,
+            recommendation=recommendation,
+            review_status=ReviewStatus.PENDING,
+        )
+    if phase == "approved":
+        return _build_reply_update(
+            draft=draft,
+            evidence=evidence,
+            recommendation=recommendation,
+            review_status=ReviewStatus.APPROVED,
+        )
+    if phase == "rejected":
+        return _build_reply_update(
+            draft=draft,
+            evidence=evidence,
+            recommendation=recommendation,
+            review_status=ReviewStatus.REJECTED,
+        )
+    return _build_reply_update(
+        draft=draft,
+        evidence=evidence,
+        recommendation=recommendation,
+        review_status=None,
+    )
 
 
 def admin_review(state: GraphState) -> dict[str, Any]:
