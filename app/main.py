@@ -18,6 +18,7 @@ if os.getenv("LANGSMITH_API_KEY"):
 from app.graph import tools as graph_tools
 from app.graph.workflow import compile_graph
 from app.rag.indexer import index_policies
+from app.case_history import upsert_case_row, list_case_history
 from app.schema import (
     TriageInput, TriageOutput, AdminReviewInput,
     ReviewStatus, DraftScenario, PendingTicket, PendingTicketsResponse
@@ -221,6 +222,9 @@ async def triage_invoke_langgraph(body: TriageInput):
         if (result.get("draft_scenario") == DraftScenario.REPLY and 
             result.get("review_status") == ReviewStatus.PENDING):
             add_pending_ticket(thread_id, result)
+
+        # Upsert case-history row for frontend audit/history panes.
+        upsert_case_row(result_state=result, thread_id=thread_id)
         
         return TriageOutput(
             thread_id=thread_id,
@@ -322,6 +326,9 @@ async def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
         
         # Get draft_reply for both new field and backward compatibility
         draft_reply = result.get("draft_reply")
+
+        # Upsert case-history row with post-review state.
+        upsert_case_row(result_state=result, thread_id=thread_id)
         
         return TriageOutput(
             thread_id=thread_id,
@@ -348,6 +355,41 @@ async def admin_review_endpoint(thread_id: str, body: AdminReviewInput):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing admin review: {str(e)}")
+
+
+@app.get("/cases/history")
+def get_cases_history(
+    status: str | None = Query(default=None),
+    thread_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    Fetch case-history rows for active and previous-case frontend panes.
+    """
+    if status is not None and status not in {"active", "in_review", "closed"}:
+        raise HTTPException(status_code=400, detail="status must be one of: active, in_review, closed")
+
+    rows = list_case_history(status=status, thread_id=thread_id, limit=limit, offset=offset)
+    summary_rows = [
+        {
+            "case_id": row.get("id"),
+            "customer_name": row.get("customer_name"),
+            "order_id": row.get("order_id"),
+            "decision_maker_action": row.get("decision_maker_action"),
+            "hitl_action": row.get("hitl_action"),
+            "final_action": row.get("final_action"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+        for row in rows
+    ]
+    return {
+        "count": len(summary_rows),
+        "limit": limit,
+        "offset": offset,
+        "rows": summary_rows,
+    }
 
 
 # Legacy endpoints (keep for backward compatibility)
