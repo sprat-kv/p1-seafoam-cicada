@@ -332,6 +332,120 @@ def prepare_action(state: GraphState) -> dict[str, Any]:
     }
 
 
+def _safe_json_object(text: str) -> dict[str, Any]:
+    """Parse JSON object safely from a model response."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return {}
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _normalize_decision_action(value: Any) -> str:
+    """Normalize arbitrary decision action text to approve/reject."""
+    action = str(value or "").strip().lower()
+    if action in {"approve", "approved"}:
+        return "approve"
+    if action in {"reject", "rejected", "deny", "denied"}:
+        return "reject"
+    return "reject"
+
+
+def decision_maker(state: GraphState) -> dict[str, Any]:
+    """
+    Decide whether to auto-approve/reject or route to HITL using confidence.
+
+    Rules:
+    - Runs only for REPLY scenario.
+    - If confidence >= 0.6, auto-apply decision (APPROVED/REJECTED).
+    - If confidence < 0.6, keep PENDING and route to HITL.
+    - On failure, default to PENDING with confidence 0.0.
+    """
+    scenario = _coerce_draft_scenario(state.get("draft_scenario", DraftScenario.REPLY))
+    if scenario != DraftScenario.REPLY:
+        return {"sender": "decision_maker"}
+
+    issue_type = state.get("issue_type", "unknown")
+    ticket_text = state.get("ticket_text", "")
+    order_details = state.get("order_details") or {}
+    suggested_action = state.get("suggested_action", "")
+    policy_evaluation = state.get("policy_evaluation", "")
+    applied_policies = state.get("applied_policies") or []
+
+    prompt = f"""
+You are an ecommerce support decision engine.
+
+You must evaluate two axes:
+1) Factual verification: check if customer request matches order details (items, status, dates, amount).
+2) Policy compliance: check if proposed action complies with policy evaluation and cited rules.
+
+High-confidence reject examples:
+- Customer requests refund/replacement for item not present in order items.
+- Refund requested but delivery is outside allowed policy window.
+- Policy output indicates non-compliance.
+
+Low-confidence examples:
+- Partial or conflicting evidence.
+- Missing key details needed for a definitive action.
+
+Issue type: {issue_type}
+Customer request: {ticket_text}
+Order details JSON: {json.dumps(order_details, ensure_ascii=True)}
+Suggested action: {suggested_action}
+Policy evaluation: {policy_evaluation}
+Applied policies JSON: {json.dumps(applied_policies, ensure_ascii=True)}
+
+Return STRICT JSON only:
+{{
+  "action": "approve" | "reject",
+  "confidence": 0.0,
+  "reasoning": "short explanation referencing factual and policy checks"
+}}
+"""
+
+    try:
+        response = get_llm().invoke([SystemMessage(content=prompt)])
+        parsed = _safe_json_object(response.content.strip() if hasattr(response, "content") else "")
+        action = _normalize_decision_action(parsed.get("action"))
+
+        confidence_raw = parsed.get("confidence", 0.0)
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        confidence = max(0.0, min(confidence, 1.0))
+
+        reasoning = str(parsed.get("reasoning", "")).strip() or "Decision generated from factual and policy checks."
+
+        if confidence >= 0.6:
+            review_status = ReviewStatus.APPROVED if action == "approve" else ReviewStatus.REJECTED
+        else:
+            review_status = ReviewStatus.PENDING
+
+        return {
+            "confidence_score": confidence,
+            "decision_action": action,
+            "decision_reasoning": reasoning,
+            "review_status": review_status,
+            "sender": "decision_maker",
+        }
+    except Exception:
+        return {
+            "confidence_score": 0.0,
+            "decision_action": None,
+            "decision_reasoning": "Decision model failed. Escalated to human review.",
+            "review_status": ReviewStatus.PENDING,
+            "sender": "decision_maker",
+        }
+
+
 def _resolve_draft_phase(
     scenario: DraftScenario,
     issue_type: str | None,

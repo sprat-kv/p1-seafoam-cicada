@@ -18,6 +18,7 @@ from app.graph.nodes import (
     classify_issue,
     resolve_order,
     prepare_action,
+    decision_maker,
     draft_reply,
     admin_review,
     finalize,
@@ -171,6 +172,7 @@ def create_graph() -> StateGraph:
     builder.add_node("prepare_action", prepare_action)
     builder.add_node("kb_orchestrator", kb_orchestrator)
     builder.add_node("policy_evaluator", policy_evaluator)
+    builder.add_node("decision_maker", decision_maker)
     builder.add_node("draft_reply", draft_reply)
     builder.add_node("admin_review", admin_review)
     builder.add_node("finalize", finalize)
@@ -201,7 +203,8 @@ def create_graph() -> StateGraph:
         }
     )
     builder.add_edge("kb_orchestrator", "policy_evaluator")
-    builder.add_edge("policy_evaluator", "draft_reply")
+    builder.add_edge("policy_evaluator", "decision_maker")
+    builder.add_edge("decision_maker", "draft_reply")
     
     # After draft -> route based on scenario and review status
     builder.add_conditional_edges(

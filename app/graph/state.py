@@ -31,6 +31,9 @@ class GraphState(TypedDict):
         policy_citations: Retrieved policy snippets from RAG retrieval.
         policy_evaluation: Policy compliance summary derived from citations.
         applied_policies: Structured policy list for admin/frontend display.
+        confidence_score: Decision confidence score from decision_maker (0.0-1.0).
+        decision_action: Decision maker action ("approved" or "rejected").
+        decision_reasoning: Decision rationale for audit/logging.
         review_status: Current status of Admin review (PENDING, APPROVED, REJECTED).
         admin_feedback: Feedback from Admin (optional).
         sender: The last node that modified the state.
@@ -51,6 +54,9 @@ class GraphState(TypedDict):
     policy_citations: Optional[list[dict]]
     policy_evaluation: Optional[str]
     applied_policies: Optional[list[dict]]
+    confidence_score: Optional[float]
+    decision_action: Optional[str]
+    decision_reasoning: Optional[str]
     review_status: Optional[ReviewStatus]
     admin_feedback: Optional[str]
     sender: Optional[str]

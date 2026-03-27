@@ -75,6 +75,9 @@ class TriageOutput(BaseModel):
     suggested_action: Optional[str] = Field(default=None, description="Template action awaiting admin approval")
     policy_evaluation: Optional[str] = Field(default=None, description="Policy compliance summary for suggested action")
     applied_policies: Optional[list[dict]] = Field(default=None, description="Policies used with cited rules for UI display")
+    confidence_score: Optional[float] = Field(default=None, description="Decision confidence score from decision_maker (0.0-1.0)")
+    decision_action: Optional[str] = Field(default=None, description="Decision maker action: approve or reject")
+    decision_reasoning: Optional[str] = Field(default=None, description="Decision rationale for audit/logging")
     review_status: Optional[ReviewStatus] = None
     evidence: Optional[str] = None
     recommendation: Optional[str] = None
@@ -98,6 +101,9 @@ class PendingTicket(BaseModel):
     issue_type: Optional[str] = None
     suggested_action: Optional[str] = None
     applied_policies: Optional[list[dict]] = None
+    confidence_score: Optional[float] = None
+    decision_action: Optional[str] = None
+    decision_reasoning: Optional[str] = None
     draft_reply: Optional[str] = None
     created_at: Optional[str] = None
 
