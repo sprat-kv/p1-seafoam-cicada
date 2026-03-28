@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { MessageCircle, Shield, Zap, CheckCircle } from "lucide-react";
+import { MessageCircle, Shield, Zap, CheckCircle, History } from "lucide-react";
 
 export default function Home() {
   return (
@@ -31,10 +31,12 @@ export default function Home() {
                 Admin Dashboard
               </Button>
             </Link>
-            <Button size="lg" variant="outline" className="gap-2" disabled>
-              <MessageCircle className="h-5 w-5" />
-              Chat (Use floating button)
-            </Button>
+            <Link href="/cases">
+              <Button size="lg" variant="outline" className="gap-2">
+                <History className="h-5 w-5" />
+                Case History
+              </Button>
+            </Link>
           </div>
         </div>
 

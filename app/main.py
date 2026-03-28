@@ -374,6 +374,7 @@ def get_cases_history(
     summary_rows = [
         {
             "case_id": row.get("id"),
+            "status": row.get("status"),
             "customer_name": row.get("customer_name"),
             "order_id": row.get("order_id"),
             "decision_maker_action": row.get("decision_maker_action"),

@@ -69,3 +69,24 @@ export interface Message {
   content: string;
   timestamp?: Date;
 }
+
+export type CaseStatus = "active" | "in_review" | "closed";
+
+export interface CaseHistoryRow {
+  case_id: number;
+  status: string | null;
+  customer_name: string | null;
+  order_id: string | null;
+  decision_maker_action: string | null;
+  hitl_action: string | null;
+  final_action: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface CaseHistoryResponse {
+  count: number;
+  limit: number;
+  offset: number;
+  rows: CaseHistoryRow[];
+}

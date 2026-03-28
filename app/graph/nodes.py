@@ -364,8 +364,8 @@ def decision_maker(state: GraphState) -> dict[str, Any]:
 
     Rules:
     - Runs only for REPLY scenario.
-    - If confidence >= 0.6, auto-apply decision (APPROVED/REJECTED).
-    - If confidence < 0.6, keep PENDING and route to HITL.
+    - If confidence >= 0.9, auto-apply decision (APPROVED/REJECTED).
+    - If confidence < 0.9, keep PENDING and route to HITL.
     - On failure, default to PENDING with confidence 0.0.
     """
     scenario = _coerce_draft_scenario(state.get("draft_scenario", DraftScenario.REPLY))
@@ -424,7 +424,7 @@ Return STRICT JSON only:
 
         reasoning = str(parsed.get("reasoning", "")).strip() or "Decision generated from factual and policy checks."
 
-        if confidence >= 0.6:
+        if confidence >= 0.9:
             review_status = ReviewStatus.APPROVED if action == "approve" else ReviewStatus.REJECTED
         else:
             review_status = ReviewStatus.PENDING

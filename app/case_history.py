@@ -84,13 +84,13 @@ def derive_status_and_actions(state: dict[str, Any]) -> tuple[str, str | None, s
 
     hitl_action: str | None = None
     if review_status in {"approved", "rejected"}:
-        came_from_hitl = bool(admin_feedback) or (confidence is not None and confidence < 0.6)
+        came_from_hitl = bool(admin_feedback) or (confidence is not None and confidence < 0.9)
         if came_from_hitl:
             hitl_action = review_status
 
     final_action: str | None = None
     if review_status in {"approved", "rejected"}:
-        if confidence is not None and confidence >= 0.6:
+        if confidence is not None and confidence >= 0.9:
             final_action = f"auto_{review_status}"
         else:
             final_action = f"hitl_{review_status}"

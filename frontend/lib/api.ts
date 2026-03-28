@@ -3,6 +3,8 @@ import {
     TriageOutput,
     PendingTicketsResponse,
     ReviewAction,
+    CaseHistoryResponse,
+    CaseStatus,
 } from "./types";
 
 const API_BASE_URL = "/api";
@@ -69,4 +71,27 @@ export async function submitReview(
     );
 
     return handleResponse<TriageOutput>(response);
+}
+
+export async function getCaseHistory(params?: {
+    status?: CaseStatus;
+    limit?: number;
+    offset?: number;
+}): Promise<CaseHistoryResponse> {
+    const searchParams = new URLSearchParams();
+    if (params?.status) searchParams.set("status", params.status);
+    if (params?.limit) searchParams.set("limit", String(params.limit));
+    if (params?.offset !== undefined) searchParams.set("offset", String(params.offset));
+
+    const qs = searchParams.toString();
+    const url = `${API_BASE_URL}/cases/history${qs ? `?${qs}` : ""}`;
+    
+    const response = await fetch(url, {
+        method: "GET",
+        headers: {
+            "Content-Type": "application/json",
+        },
+    });
+
+    return handleResponse<CaseHistoryResponse>(response);
 }
